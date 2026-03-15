@@ -190,53 +190,96 @@ def _parse_json(text: str) -> dict | None:
 
 
 def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
-    """Extract evenly-spaced frames from video bytes. Tries ffmpeg first, falls back to OpenCV."""
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+    """Extract evenly-spaced frames from video bytes using ffmpeg."""
+    import subprocess, shutil
+
+    suffix = ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(video_bytes)
         path = tmp.name
 
     try:
-        # ── Try ffmpeg (reliable on Linux/Streamlit Cloud) ──────────────────
-        import subprocess, shutil
-        if shutil.which("ffmpeg") and shutil.which("ffprobe"):
-            # Get duration via ffprobe
+        if not shutil.which("ffmpeg"):
+            return []
+
+        # ── Strategy 1: ffprobe duration → seek to timestamps ───────────────
+        duration = 0.0
+        try:
             probe = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                  "-of", "default=noprint_wrappers=1:nokey=1", path],
                 capture_output=True, text=True, timeout=15,
             )
-            duration = float(probe.stdout.strip()) if probe.stdout.strip() else 0
-            if duration > 0:
-                frames = []
-                for i in range(num_frames):
-                    ts = duration * (i + 1) / (num_frames + 1)
-                    result = subprocess.run(
-                        ["ffmpeg", "-ss", str(ts), "-i", path,
-                         "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
-                        capture_output=True, timeout=20,
-                    )
-                    if result.returncode == 0 and result.stdout:
-                        frames.append(result.stdout)
-                if frames:
-                    return frames
+            raw = probe.stdout.strip()
+            duration = float(raw) if raw and raw.lower() not in ("n/a", "") else 0.0
+        except Exception:
+            duration = 0.0
 
-        # ── Fallback: OpenCV ────────────────────────────────────────────────
-        import cv2
-        cap   = cv2.VideoCapture(path)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total == 0:
-            cap.release()
-            return []
+        if duration > 0:
+            frames = []
+            for i in range(num_frames):
+                ts = duration * (i + 1) / (num_frames + 1)
+                r = subprocess.run(
+                    ["ffmpeg", "-ss", str(ts), "-i", path,
+                     "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
+                    capture_output=True, timeout=20,
+                )
+                if r.returncode == 0 and r.stdout:
+                    frames.append(r.stdout)
+            if frames:
+                return frames
+
+        # ── Strategy 2: extract by frame number (no duration needed) ────────
+        # Count total frames first
+        count_r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-count_packets", "-show_entries", "stream=nb_read_packets",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        try:
+            total = int(count_r.stdout.strip())
+        except Exception:
+            total = 0
+
+        if total > 0:
+            frames = []
+            for i in range(num_frames):
+                fn = int(total * (i + 1) / (num_frames + 1))
+                r = subprocess.run(
+                    ["ffmpeg", "-i", path,
+                     "-vf", f"select=eq(n\\,{fn})", "-vsync", "0",
+                     "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
+                    capture_output=True, timeout=30,
+                )
+                if r.returncode == 0 and r.stdout:
+                    frames.append(r.stdout)
+            if frames:
+                return frames
+
+        # ── Strategy 3: blind seek at fixed intervals (last resort) ─────────
         frames = []
-        for i in range(num_frames):
-            idx = int(total * (i + 1) / (num_frames + 1))
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if ret:
-                _, buf = cv2.imencode(".jpg", frame)
-                frames.append(buf.tobytes())
-        cap.release()
-        return frames
+        for ts in [1.0, 3.0, 6.0, 10.0][:num_frames]:
+            r = subprocess.run(
+                ["ffmpeg", "-ss", str(ts), "-i", path,
+                 "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
+                capture_output=True, timeout=20,
+            )
+            if r.returncode == 0 and r.stdout:
+                frames.append(r.stdout)
+        if frames:
+            return frames
+
+        # ── Strategy 4: first frame only ────────────────────────────────────
+        r = subprocess.run(
+            ["ffmpeg", "-i", path,
+             "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
+            capture_output=True, timeout=20,
+        )
+        if r.returncode == 0 and r.stdout:
+            return [r.stdout]
+
+        return []
 
     except Exception:
         return []
@@ -245,6 +288,8 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
             os.unlink(path)
         except OSError:
             pass
+
+
 
 
 # ── Still image annotation (Pillow) ───────────────────────────────────────────
