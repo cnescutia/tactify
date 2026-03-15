@@ -16,7 +16,9 @@ import streamlit.components.v1 as st_components
 from dotenv import load_dotenv
 
 from knowledge_base import POSITIONS, PLAY_TYPES, AGE_GROUPS
-from analyzer import analyze_media, generate_coaching_audio, compare_sessions, generate_comparison_audio, analyze_team_patterns
+from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
+                       generate_comparison_audio, analyze_team_patterns,
+                       merge_audio_into_video, create_annotated_video_simple)
 
 load_dotenv()
 
@@ -341,25 +343,40 @@ def render_pro_reference(ref: dict):
 
     with col_vid:
         if youtube_query:
-            encoded = urllib.parse.quote(youtube_query)
-            embed_url = f"https://www.youtube.com/embed?listType=search&list={encoded}&controls=1&rel=0&modestbranding=1"
-            st_components.html(f"""
-            <div style="border-radius:12px;overflow:hidden;background:#000;">
-                <iframe
-                    src="{embed_url}"
-                    width="100%"
-                    height="280"
-                    frameborder="0"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowfullscreen
-                    style="display:block;">
-                </iframe>
-            </div>
-            """, height=288)
+            yt_search = f"https://www.youtube.com/results?search_query={urllib.parse.quote(youtube_query)}"
+            st.markdown(f"""
+            <a href="{yt_search}" target="_blank" style="text-decoration:none;">
+                <div style="background:#111;border:1.5px solid #1e1e1e;border-radius:14px;
+                            height:220px;display:flex;flex-direction:column;
+                            align-items:center;justify-content:center;gap:16px;
+                            cursor:pointer;transition:border-color 0.2s;"
+                     onmouseover="this.style.borderColor='#FF0000'"
+                     onmouseout="this.style.borderColor='#1e1e1e'">
+                    <div style="width:64px;height:44px;background:#FF0000;border-radius:10px;
+                                display:flex;align-items:center;justify-content:center;">
+                        <div style="width:0;height:0;border-top:11px solid transparent;
+                                    border-bottom:11px solid transparent;
+                                    border-left:18px solid #fff;margin-left:4px;"></div>
+                    </div>
+                    <div style="text-align:center;padding:0 20px;">
+                        <div style="color:#fff;font-size:13px;font-weight:700;margin-bottom:6px;">
+                            Watch Reference Clip
+                        </div>
+                        <div style="color:#444;font-size:11px;line-height:1.5;">
+                            {e(youtube_query)}
+                        </div>
+                    </div>
+                    <div style="color:#FF0000;font-size:10px;letter-spacing:2px;
+                                text-transform:uppercase;font-weight:700;">
+                        Opens on YouTube →
+                    </div>
+                </div>
+            </a>
+            """, unsafe_allow_html=True)
         else:
             st.markdown("""
             <div style="background:#111;border:1.5px dashed #1e1e1e;border-radius:14px;
-                        height:280px;display:flex;align-items:center;justify-content:center;">
+                        height:220px;display:flex;align-items:center;justify-content:center;">
                 <div style="color:#333;font-size:13px;">No reference clip available</div>
             </div>
             """, unsafe_allow_html=True)
@@ -854,17 +871,14 @@ with tab_single:
         scores      = data.get("scores", {})
         summary     = e(data.get("summary", ""))
 
-        # ── Step 2: Pose-tracked video annotation ──────────────────────────────
+        # ── Step 2: Coaching audio ────────────────────────────────────────────
+        with st.spinner("Generating coaching audio…"):
+            audio_bytes = generate_coaching_audio(data, position)
+
+        # ── Step 3: Annotated video + merge audio ─────────────────────────────
         annotated_video = None
         if is_video and annotations:
-            from analyzer import create_annotated_video
-
-            st.markdown(
-                '<div style="color:#444;font-size:11px;letter-spacing:2px;text-transform:uppercase;'
-                'font-weight:700;margin-bottom:8px;">Building Annotated Video</div>',
-                unsafe_allow_html=True,
-            )
-            progress_bar  = st.progress(0.0, text="Detecting player pose…")
+            progress_bar  = st.progress(0.0, text="Annotating video…")
             progress_text = st.empty()
 
             def _on_progress(pct: float, msg: str = ""):
@@ -875,15 +889,18 @@ with tab_single:
                         unsafe_allow_html=True,
                     )
 
-            annotated_video = create_annotated_video(
+            annotated_video = create_annotated_video_simple(
                 file_bytes, annotations, scores, progress_callback=_on_progress
             )
             progress_bar.empty()
             progress_text.empty()
 
-        # ── Coaching audio narration ───────────────────────────────────────────
-        with st.spinner("Generating coaching audio…"):
-            audio_bytes = generate_coaching_audio(data, position)
+            # Merge coaching audio into annotated video
+            if annotated_video and audio_bytes:
+                with st.spinner("Merging coaching audio into video…"):
+                    merged = merge_audio_into_video(annotated_video, audio_bytes)
+                    if merged:
+                        annotated_video = merged
 
         # ── Summary banner ─────────────────────────────────────────────────────
         st.markdown(f"""
