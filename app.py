@@ -872,16 +872,23 @@ with tab_single:
         summary     = e(data.get("summary", ""))
 
         # ── Step 2: Coaching audio ────────────────────────────────────────────
-        with st.spinner("Generating coaching audio…"):
-            audio_bytes = generate_coaching_audio(data, position)
+        try:
+            with st.spinner("Generating coaching audio…"):
+                audio_bytes = generate_coaching_audio(data, position)
+        except Exception as _ae:
+            audio_bytes = None
+            st.warning(f"Audio generation skipped: {_ae}")
 
         # ── Step 3: Annotate video with ffmpeg filters ────────────────────────
         video_with_audio = None
         if is_video:
-            with st.spinner("Adding coaching overlay to video…"):
-                video_with_audio = create_annotated_video_simple(
-                    file_bytes, annotations, scores
-                )
+            try:
+                with st.spinner("Adding coaching overlay to video…"):
+                    video_with_audio = create_annotated_video_simple(
+                        file_bytes, annotations, scores
+                    )
+            except Exception as _ve:
+                st.warning(f"Video annotation skipped: {_ve}")
             if not video_with_audio:
                 video_with_audio = file_bytes  # fallback to original
 

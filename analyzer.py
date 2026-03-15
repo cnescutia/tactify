@@ -782,14 +782,14 @@ def create_annotated_video_simple(
             )
             filters.append(
                 f"drawtext=text='{num}':x={lx-5}:y={ly-7}:"
-                f"fontsize=12:fontcolor=black:font=bold"
+                f"fontsize=12:fontcolor=black"
             )
             # Label text
             if lbl:
                 tx = lx + (14 if px < w // 2 else -len(lbl)*7 - 14)
                 filters.append(
                     f"drawtext=text='{lbl}':x={tx}:y={ly-8}:"
-                    f"fontsize=11:fontcolor={c}:font=bold"
+                    f"fontsize=11:fontcolor={c}"
                 )
 
         # Score panel (bottom right)
@@ -809,7 +809,7 @@ def create_annotated_video_simple(
         )
         filters.append(
             f"drawtext=text='TACTIFY':x={px0}:y={py0}:"
-            f"fontsize=10:fontcolor=0x00FF87:font=bold"
+            f"fontsize=10:fontcolor=0x00FF87"
         )
         for j, (lbl, val) in enumerate(score_cats):
             y  = py0 + 16 + j * 20
@@ -825,7 +825,7 @@ def create_annotated_video_simple(
             )
             filters.append(
                 f"drawtext=text='{lbl} {val}':x={px0}:y={y}:"
-                f"fontsize=10:fontcolor=0xaaaaaa:font=bold"
+                f"fontsize=10:fontcolor=0xaaaaaa"
             )
 
         vf = ",".join(filters)
