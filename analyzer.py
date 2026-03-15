@@ -61,24 +61,33 @@ _SEV_RGB = {
 
 # ── Claude prompt ─────────────────────────────────────────────────────────────
 
-ANALYSIS_PROMPT = """You are an elite professional soccer coach and technical analyst.
-20+ years at the highest levels — European clubs, MLS, national teams.
-You are reviewing footage to give a player actionable, specific feedback they can act on TODAY.
+ANALYSIS_PROMPT = """You are a senior technical coach at an MLS club, with experience at top European academies.
+You see exactly what you see in the footage — no assumptions, no generic observations.
+Every piece of feedback must be directly tied to something visible in these specific frames.
 
 CONTEXT:
   Position  : {position}
   Situation : {play_type}
   Age Group : {age_group}
-  Notes     : {notes}
+  Coach Notes: {notes}
 
 COACHING KNOWLEDGE BASE:
 {knowledge}
 
-Study every image/frame carefully. Return ONLY a valid JSON object — no markdown, no extra text.
-Images are numbered 1 through {num_frames} in the order provided.
+Study every frame with the eye of a scout preparing a dossier for the coaching staff.
+Return ONLY a valid JSON object — no markdown, no commentary outside the JSON.
+Frames are numbered 1–{num_frames} in the order provided.
+
+LANGUAGE STANDARD:
+- Use technical coaching vocabulary: "body shape", "scanning", "first touch direction",
+  "weight of pass", "hip orientation", "center of gravity", "pressure timing", "press trigger"
+- Be specific about which foot, which shoulder, which direction
+- Name specific game situations: "counter-press", "third-man run", "switch of play", "overlapping run"
+- Never write advice that could apply to any random player — tie it to what you literally see
+- Scores: 10 = MLS starter level, 7 = high-level youth, 5 = recreational adult, 3 = significant technical gaps
 
 {{
-  "summary": "One powerful, specific sentence about this player's performance",
+  "summary": "One sharp, specific sentence that could open a real scouting report on this player",
 
   "scores": {{
     "technique":         <integer 1-10>,
@@ -91,67 +100,72 @@ Images are numbered 1 through {num_frames} in the order provided.
   "annotations": [
     {{
       "number":   1,
-      "label":    "2-4 word label shown on video",
-      "note":     "One specific coaching observation from the footage",
+      "label":    "3-5 word technical label (e.g. 'Closed hip — missed lane')",
+      "note":     "One precise coaching observation referencing specific body mechanics visible in the frame",
       "region":   "<head|upper_body|left_arm|right_arm|torso|hips|left_leg|right_leg|left_foot|right_foot|feet|body>",
       "severity": "<strength|warning|error>"
     }}
   ],
 
   "priority_fix": {{
-    "title":      "Short title of the #1 thing to fix (5-7 words)",
-    "what":       "What the player is doing wrong (1 sentence, specific)",
-    "why":        "How this mistake costs them in a real game (1 sentence)",
-    "cue":        "The single coaching cue they must remember — short, memorable, under 8 words",
+    "title":      "The single most important technical fix (5-8 words)",
+    "what":       "Exact description of the technical error visible in the footage — specific body part, specific action",
+    "why":        "The direct game consequence of this error in a real MLS-level match",
+    "cue":        "One coaching cue the player repeats in their head — crisp, memorable, under 8 words",
     "drill": {{
-      "name":          "Drill name",
+      "name":          "Specific drill name",
       "duration":      "X min",
-      "setup":         "How to set up and run the drill (2-3 sentences, specific: cones, distances, reps)",
-      "focus":         "What to concentrate on during the drill (1 sentence)",
-      "know_its_working": "How the player knows the drill is making a difference (1 sentence)"
+      "setup":         "Precise setup: cone distances, partner needed or solo, reps, surface. A player should be able to replicate this in 60 seconds of reading.",
+      "focus":         "The one mechanical thing to concentrate on during the drill",
+      "know_its_working": "Observable sign the player can self-check to confirm improvement"
     }}
   }},
 
   "fix_cards": [
     {{
-      "mistake":       "What is wrong (short, direct)",
-      "why_it_matters":"Real game consequence — what this costs them on the pitch (1 sentence)",
-      "correction":    "Exactly what to do differently — be specific (1-2 sentences)",
-      "cue":           "Short coaching cue (under 8 words)",
+      "mistake":        "Name of the technical error (short, direct — what a coach would write in a match report)",
+      "why_it_matters": "Specific game cost — what does this error cause in a real match situation?",
+      "correction":     "Precisely what the player must do differently — reference the body part and the timing",
+      "cue":            "Short coaching cue under 8 words",
       "drill": {{
-        "name":             "Drill name",
-        "duration":         "X min",
-        "setup":            "Setup and execution (2 sentences)",
-        "know_its_working": "How they know it's improving (1 sentence)"
+        "name":              "Drill name",
+        "duration":          "X min",
+        "setup":             "Specific setup with reps, distances, or partner instructions",
+        "know_its_working":  "Self-check: how the player knows the correction is clicking"
       }}
     }}
   ],
 
   "best_moment": {{
-    "frame":       <integer 1-{num_frames}, which image shows the best technique>,
-    "description": "What the player is doing well in this specific moment (1-2 sentences)"
+    "frame":       <integer 1–{num_frames} — which frame shows the cleanest technique>,
+    "description": "What specifically is correct here — body mechanics, decision, timing. Reference exactly what you see."
   }},
 
   "worst_moment": {{
-    "frame":       <integer 1-{num_frames}, which image shows the biggest mistake>,
-    "what":        "What the mistake is (1 sentence)",
-    "cause":       "What body mechanics cause it (1 sentence)",
-    "effect":      "What happens in the game as a result (1 sentence)"
+    "frame":       <integer 1–{num_frames} — which frame shows the most costly error>,
+    "what":        "The specific technical mistake — name it precisely",
+    "cause":       "The mechanical root cause — what body position or timing error creates this",
+    "effect":      "What this costs the player or team in that specific game moment"
   }},
 
-  "strengths":    ["...", "...", "..."],
+  "strengths": [
+    "3 specific technical strengths that are genuinely visible in this footage — not generic praise"
+  ],
 
   "pro_reference": {{
-    "player":        "Full name",
-    "team":          "Club or national team",
-    "note":          "Two sentences on why this player is the benchmark for this situation.",
-    "youtube_query": "A YouTube search query that will find a short clip of this player demonstrating the exact technique the player needs to improve. Be specific: include player name, technique name, and 'tutorial' or 'analysis'. Example: 'Luka Modric open body shape receiving tutorial'"
+    "player":        "Full name of an active or recently-retired professional",
+    "team":          "Current or most recent club / national team",
+    "note":          "Why this specific pro is the benchmark for this exact technical element the player needs to improve. Be precise about which skill and why.",
+    "youtube_query": "Search query to find a clip of this pro demonstrating that exact technique. Include: player name + specific skill + 'analysis' or 'tutorial'. E.g.: 'Rodri ball retention under pressure analysis'"
   }}
 }}
 
-3–5 annotations. 2–3 fix cards. Score 10 = professional level.
-Fix cards must be tied to specific mistakes visible in the footage — no generic advice.
-Drills must be specific: include distances, reps, or setup details a player can replicate alone.
+REQUIREMENTS:
+- 4–5 annotations, each on a different body region
+- 2–3 fix cards, each a distinct technical issue
+- Every note/correction must reference something literally visible in the footage
+- Drills must be executable solo unless stated — include distances in meters or yards, rep counts
+- No generic soccer advice. This is used by MLS coaches and players.
 """
 
 
@@ -242,37 +256,82 @@ def annotate_image(image_bytes: bytes, annotations: list) -> bytes:
     w, h = img.size
     layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw  = ImageDraw.Draw(layer)
-    r     = max(20, min(w, h) // 26)
-    fsize = max(14, r - 4)
+    r     = max(18, min(w, h) // 28)
+    fsize_num   = max(13, r - 5)
+    fsize_label = max(11, r - 8)
 
-    font = None
+    font_num = font_lbl = None
     for path in ["/System/Library/Fonts/Helvetica.ttc",
                  "/System/Library/Fonts/Arial.ttf",
-                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]:
+                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                 "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"]:
         try:
-            font = ImageFont.truetype(path, fsize)
+            font_num = ImageFont.truetype(path, fsize_num)
+            font_lbl = ImageFont.truetype(path, fsize_label)
             break
         except Exception:
             continue
-    if font is None:
-        font = ImageFont.load_default()
+    if font_num is None:
+        font_num = font_lbl = ImageFont.load_default()
 
     for ann in annotations[:6]:
         region = ann.get("region", "body").lower()
         sev    = ann.get("severity", "warning")
         num    = ann.get("number", 1)
+        lbl    = ann.get("label", "")[:28]
         frac   = _REGION_FALLBACK.get(region, (0.5, 0.5))
         px, py = int(frac[0] * w), int(frac[1] * h)
         rgb    = _SEV_RGB.get(sev, _SEV_RGB["warning"])
 
-        for gr, ga in [(r + 12, 35), (r + 6, 70)]:
+        # Glow rings
+        for gr, ga in [(r + 14, 30), (r + 7, 65)]:
             tmp = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             ImageDraw.Draw(tmp).ellipse([px-gr, py-gr, px+gr, py+gr], fill=(*rgb, ga))
             layer = Image.alpha_composite(layer, tmp)
             draw  = ImageDraw.Draw(layer)
 
+        # Main dot
         draw.ellipse([px-r, py-r, px+r, py+r], fill=(*rgb, 230), outline=(255, 255, 255, 220), width=2)
-        draw.text((px, py), str(num), fill=(255, 255, 255, 255), font=font, anchor="mm")
+        draw.text((px, py), str(num), fill=(255, 255, 255, 255), font=font_num, anchor="mm")
+
+        # Callout label
+        if lbl:
+            # Decide which side to place label
+            go_right = px < w * 0.55
+            line_len  = max(55, w // 9)
+            tip_x = px + (r + line_len if go_right else -(r + line_len))
+            tip_y = py - r // 2
+
+            # Connector line
+            draw.line([(px + (r if go_right else -r), py), (tip_x, tip_y)],
+                      fill=(*rgb, 170), width=2)
+
+            # Label box
+            pad = 6
+            try:
+                bbox = draw.textbbox((0, 0), lbl, font=font_lbl)
+                lw, lh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except AttributeError:
+                lw, lh = len(lbl) * fsize_label * 0.6, fsize_label + 4
+                lw, lh = int(lw), int(lh)
+
+            bx1 = tip_x if go_right else tip_x - lw - pad * 2
+            by1 = tip_y - lh // 2 - pad
+            bx2 = bx1 + lw + pad * 2
+            by2 = by1 + lh + pad * 2
+
+            # Clamp to image
+            if bx2 > w - 4: dx = bx2 - (w - 4); bx1 -= dx; bx2 -= dx
+            if bx1 < 4:     dx = 4 - bx1;        bx1 += dx; bx2 += dx
+            if by1 < 4:     by1 = 4;              by2 = by1 + lh + pad * 2
+            if by2 > h - 4: by2 = h - 4;          by1 = by2 - lh - pad * 2
+
+            tmp3 = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            ImageDraw.Draw(tmp3).rectangle([bx1, by1, bx2, by2], fill=(8, 8, 8, 210))
+            layer = Image.alpha_composite(layer, tmp3)
+            draw  = ImageDraw.Draw(layer)
+            draw.rectangle([bx1, by1, bx2, by2], outline=(*rgb, 200), width=1)
+            draw.text((bx1 + pad, by1 + pad), lbl, fill=(*rgb, 230), font=font_lbl)
 
     result = Image.alpha_composite(img, layer).convert("RGB")
     buf = io.BytesIO()
@@ -664,7 +723,7 @@ def analyze_media(
 def merge_audio_into_video(video_bytes: bytes, audio_bytes: bytes) -> bytes | None:
     """
     Merge coaching audio (MP3) into the video using ffmpeg.
-    Audio is trimmed/padded to match video length.
+    The video loops continuously so the full audio narration plays without cutoff.
     Returns merged MP4 bytes, or None if ffmpeg is unavailable.
     """
     import shutil, subprocess
@@ -682,12 +741,13 @@ def merge_audio_into_video(video_bytes: bytes, audio_bytes: bytes) -> bytes | No
     try:
         subprocess.run(
             ["ffmpeg", "-y",
+             "-stream_loop", "-1",   # loop video input so it never runs out
              "-i", vpath,
              "-i", apath,
-             "-c:v", "copy",
+             "-c:v", "libx264",
              "-c:a", "aac",
              "-b:a", "128k",
-             "-shortest",
+             "-shortest",            # stop when audio ends
              "-movflags", "+faststart",
              out_path],
             capture_output=True, timeout=60,
@@ -711,8 +771,8 @@ def create_annotated_video_simple(
     progress_callback=None,
 ) -> bytes | None:
     """
-    Burn annotation dots + score panel into video using ffmpeg drawbox/drawtext filters.
-    Processes the video stream directly — no per-frame Python overhead.
+    Burn annotation dots + connecting lines + score bars into video using
+    ffmpeg drawbox filters ONLY (no drawtext — avoids fontconfig dependency).
     """
     import shutil, subprocess
     if not shutil.which("ffmpeg"):
@@ -724,7 +784,6 @@ def create_annotated_video_simple(
     out_path = vpath + "_annotated.mp4"
 
     try:
-        # Get dimensions for position calculations
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height", "-of", "json", vpath],
@@ -735,113 +794,103 @@ def create_annotated_video_simple(
         w      = int(stream.get("width",  640))
         h      = int(stream.get("height", 360))
 
-        # Build ffmpeg filter chain
         sev_colors = {
-            "strength": "0x00FF87",
-            "warning":  "0xFFC700",
-            "error":    "0xFF4444",
+            "strength": "0x10B981",
+            "warning":  "0xF59E0B",
+            "error":    "0xEF4444",
         }
         filters = []
 
-        # Annotation dots + labels
         for ann in annotations[:6]:
             region = ann.get("region", "upper_body")
             fx, fy = _REGION_FALLBACK.get(region, (0.5, 0.3))
-            px = int(fx * w)
-            py = int(fy * h)
-            num = ann.get("number", 1)
-            lbl = ann.get("label", "")[:20].replace("'", "")
-            sev = ann.get("severity", "warning")
-            c   = sev_colors.get(sev, "0xFFC700")
+            px     = int(fx * w)
+            py     = int(fy * h)
+            sev    = ann.get("severity", "warning")
+            c      = sev_colors.get(sev, "0xF59E0B")
+            go_right = px < w // 2
 
-            # Outer glow ring
-            filters.append(
-                f"drawbox=x={px-14}:y={py-14}:w=28:h=28:"
-                f"color={c}@0.3:t=fill"
-            )
-            # Solid dot
-            filters.append(
-                f"drawbox=x={px-7}:y={py-7}:w=14:h=14:"
-                f"color={c}@0.9:t=fill"
-            )
-            # Line to label
-            lx = px + (90 if px < w // 2 else -90)
-            ly = py - 30
-            filters.append(
-                f"drawbox=x={min(px,lx)}:y={py}:w={abs(lx-px)}:h=2:"
-                f"color={c}@0.7:t=fill"
-            )
-            filters.append(
-                f"drawbox=x={lx}:y={min(py,ly)}:w=2:h={abs(py-ly)}:"
-                f"color={c}@0.7:t=fill"
-            )
-            # Number badge
-            filters.append(
-                f"drawbox=x={lx-10}:y={ly-10}:w=20:h=20:"
-                f"color={c}@0.9:t=fill"
-            )
-            filters.append(
-                f"drawtext=text='{num}':x={lx-5}:y={ly-7}:"
-                f"fontsize=12:fontcolor=black"
-            )
-            # Label text
-            if lbl:
-                tx = lx + (14 if px < w // 2 else -len(lbl)*7 - 14)
+            # Outer glow (large semi-transparent box → looks like a circle)
+            g = 18
+            filters.append(f"drawbox=x={px-g}:y={py-g}:w={g*2}:h={g*2}:color={c}@0.20:t=fill")
+            g = 12
+            filters.append(f"drawbox=x={px-g}:y={py-g}:w={g*2}:h={g*2}:color={c}@0.40:t=fill")
+            # Solid dot core
+            g = 7
+            filters.append(f"drawbox=x={px-g}:y={py-g}:w={g*2}:h={g*2}:color={c}@0.95:t=fill")
+            # White border (1px outline via t=border)
+            filters.append(f"drawbox=x={px-g-1}:y={py-g-1}:w={g*2+2}:h={g*2+2}:color=white@0.60:t=1")
+
+            # Connector: horizontal line from dot to callout column
+            lx     = px + (85 if go_right else -85)
+            ly     = py - 22
+            hx1    = px + (g if go_right else -(g))
+            hx2    = lx
+            hy     = py
+            hlen   = abs(hx2 - hx1)
+            if hlen > 0:
                 filters.append(
-                    f"drawtext=text='{lbl}':x={tx}:y={ly-8}:"
-                    f"fontsize=11:fontcolor={c}"
+                    f"drawbox=x={min(hx1,hx2)}:y={hy-1}:w={hlen}:h=2:color={c}@0.75:t=fill"
                 )
+            # Vertical leg up to callout badge
+            vlen = abs(py - ly)
+            if vlen > 0:
+                filters.append(
+                    f"drawbox=x={lx-1}:y={min(py,ly)}:w=2:h={vlen}:color={c}@0.75:t=fill"
+                )
+            # Callout badge (solid square at tip of line)
+            b = 9
+            filters.append(f"drawbox=x={lx-b}:y={ly-b}:w={b*2}:h={b*2}:color={c}@0.95:t=fill")
+            filters.append(f"drawbox=x={lx-b-1}:y={ly-b-1}:w={b*2+2}:h={b*2+2}:color=white@0.50:t=1")
 
-        # Score panel (bottom right)
-        score_cats = [
-            ("TEC", scores.get("technique",         5)),
-            ("POS", scores.get("body_position",     5)),
-            ("SPA", scores.get("spatial_awareness", 5)),
-            ("DEC", scores.get("decision_making",   5)),
-            ("EFF", scores.get("effort",            5)),
+        # Score bar panel — bottom-right corner (drawbox only, no text)
+        score_vals = [
+            scores.get("technique",         5),
+            scores.get("body_position",     5),
+            scores.get("spatial_awareness", 5),
+            scores.get("decision_making",   5),
+            scores.get("effort",            5),
         ]
-        panel_h = len(score_cats) * 20 + 28
-        px0 = w - 130
-        py0 = h - panel_h - 8
+        bar_w   = 80
+        bar_h   = 7
+        row_h   = 14
+        panel_h = len(score_vals) * row_h + 10
+        px0     = w - bar_w - 18
+        py0     = h - panel_h - 12
+
+        # Panel background
         filters.append(
-            f"drawbox=x={px0-6}:y={py0-6}:w=128:h={panel_h+10}:"
-            f"color=0x060606@0.85:t=fill"
+            f"drawbox=x={px0-6}:y={py0-6}:w={bar_w+12}:h={panel_h+10}:"
+            f"color=0x050505@0.88:t=fill"
         )
+        # Green accent bar at top of panel (acts as "TACTIFY" brand marker)
         filters.append(
-            f"drawtext=text='TACTIFY':x={px0}:y={py0}:"
-            f"fontsize=10:fontcolor=0x00FF87"
+            f"drawbox=x={px0-6}:y={py0-6}:w={bar_w+12}:h=3:color=0x00FF87@0.90:t=fill"
         )
-        for j, (lbl, val) in enumerate(score_cats):
-            y  = py0 + 16 + j * 20
-            bc = "0x00FF87" if val >= 8 else "0xFFC700" if val >= 6 else "0xFF4444"
-            # Background bar
-            filters.append(
-                f"drawbox=x={px0}:y={y+4}:w=80:h=10:color=0x1a1a1a@0.9:t=fill"
-            )
-            # Value bar
-            bw = max(1, int(80 * val / 10))
-            filters.append(
-                f"drawbox=x={px0}:y={y+4}:w={bw}:h=10:color={bc}@0.85:t=fill"
-            )
-            filters.append(
-                f"drawtext=text='{lbl} {val}':x={px0}:y={y}:"
-                f"fontsize=10:fontcolor=0xaaaaaa"
-            )
+
+        for j, val in enumerate(score_vals):
+            y  = py0 + j * row_h
+            bc = "0x10B981" if val >= 8 else "0xF59E0B" if val >= 6 else "0xEF4444"
+            # Track
+            filters.append(f"drawbox=x={px0}:y={y}:w={bar_w}:h={bar_h}:color=0x1a1a1a@0.90:t=fill")
+            # Fill
+            fill = max(2, int(bar_w * val / 10))
+            filters.append(f"drawbox=x={px0}:y={y}:w={fill}:h={bar_h}:color={bc}@0.90:t=fill")
 
         vf = ",".join(filters)
 
-        subprocess.run(
+        result = subprocess.run(
             ["ffmpeg", "-y", "-i", vpath,
              "-vf", vf,
              "-c:v", "libx264",
              "-pix_fmt", "yuv420p",
-             "-crf", "22",
+             "-crf", "21",
              "-movflags", "+faststart",
              out_path],
             capture_output=True, timeout=180,
         )
 
-        if os.path.exists(out_path):
+        if result.returncode == 0 and os.path.exists(out_path):
             with open(out_path, "rb") as f:
                 return f.read()
         return None

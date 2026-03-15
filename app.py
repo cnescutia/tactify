@@ -873,24 +873,28 @@ with tab_single:
 
         # ── Step 2: Coaching audio ────────────────────────────────────────────
         try:
-            with st.spinner("Generating coaching audio…"):
+            with st.spinner("Generating coaching audio narration…"):
                 audio_bytes = generate_coaching_audio(data, position)
         except Exception as _ae:
             audio_bytes = None
-            st.warning(f"Audio generation skipped: {_ae}")
 
-        # ── Step 3: Annotate video with ffmpeg filters ────────────────────────
-        video_with_audio = None
+        # ── Step 3: Annotate video + merge audio (one-click experience) ───────
+        final_video = None
         if is_video:
             try:
                 with st.spinner("Adding coaching overlay to video…"):
-                    video_with_audio = create_annotated_video_simple(
+                    annotated = create_annotated_video_simple(
                         file_bytes, annotations, scores
                     )
+                base_video = annotated if annotated else file_bytes
+                if audio_bytes:
+                    with st.spinner("Merging coaching audio into video…"):
+                        merged = merge_audio_into_video(base_video, audio_bytes)
+                    final_video = merged if merged else base_video
+                else:
+                    final_video = base_video
             except Exception as _ve:
-                st.warning(f"Video annotation skipped: {_ve}")
-            if not video_with_audio:
-                video_with_audio = file_bytes  # fallback to original
+                final_video = file_bytes
 
         # ── Summary banner ─────────────────────────────────────────────────────
         st.markdown(f"""
@@ -907,32 +911,73 @@ with tab_single:
 
         with col_media:
             if is_video:
-                label("Annotated Video")
-                st.video(video_with_audio)
-                # Coaching audio as separate player so it runs full length
-                if audio_bytes:
-                    gap(8)
-                    st.markdown(
-                        '<div style="color:#444;font-size:10px;letter-spacing:2px;'
-                        'text-transform:uppercase;font-weight:700;margin-bottom:4px;">'
-                        '🎙 Coaching Narration — play while watching the video</div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.audio(audio_bytes, format="audio/mp3")
-                # Annotated key frames
+                label("Coaching Video — Press Play")
+                st.markdown(
+                    '<div style="color:#555;font-size:11px;letter-spacing:1px;margin-bottom:8px;">'
+                    'Audio coaching narration is embedded · dots and lines show focus areas</div>',
+                    unsafe_allow_html=True,
+                )
+                st.video(final_video)
+
+                # Annotated key frames with coaching legend
                 if result.get("key_frames"):
-                    gap(16)
-                    label("Annotated Key Frames")
-                    kf_cols = st.columns(len(result["key_frames"][:4]), gap="small")
-                    for kf_col, kf in zip(kf_cols, result["key_frames"][:4]):
+                    gap(24)
+                    label("Frame-by-Frame Breakdown")
+                    kf_cols = st.columns(min(len(result["key_frames"]), 4), gap="small")
+                    for i, (kf_col, kf) in enumerate(zip(kf_cols, result["key_frames"][:4])):
                         with kf_col:
                             st.image(kf, use_container_width=True)
+                            st.markdown(f'<div style="color:#555;font-size:10px;text-align:center;margin-top:4px;letter-spacing:1px;">FRAME {i+1}</div>', unsafe_allow_html=True)
+                    # Annotation legend
+                    if annotations:
+                        gap(12)
+                        ann_html = '<div style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:10px;padding:16px 20px;">'
+                        for ann in annotations[:6]:
+                            sev  = ann.get("severity", "warning")
+                            col  = {"strength": "#10B981", "warning": "#F59E0B", "error": "#EF4444"}.get(sev, "#F59E0B")
+                            num  = ann.get("number", "")
+                            lbl  = e(ann.get("label", ""))
+                            note = e(ann.get("note", ""))
+                            ann_html += (
+                                f'<div style="display:flex;gap:12px;padding:8px 0;'
+                                f'border-bottom:1px solid #141414;align-items:flex-start;">'
+                                f'<div style="background:{col};color:#000;font-size:11px;font-weight:800;'
+                                f'min-width:22px;height:22px;border-radius:50%;display:flex;'
+                                f'align-items:center;justify-content:center;flex-shrink:0;">{num}</div>'
+                                f'<div><div style="color:{col};font-size:11px;font-weight:700;'
+                                f'text-transform:uppercase;letter-spacing:1px;">{lbl}</div>'
+                                f'<div style="color:#777;font-size:12px;line-height:1.5;margin-top:2px;">{note}</div>'
+                                f'</div></div>'
+                            )
+                        ann_html += '</div>'
+                        st.markdown(ann_html, unsafe_allow_html=True)
             else:
                 label("Annotated Analysis")
                 display = result.get("annotated_image") or file_bytes
                 st.image(display, use_container_width=True)
-                if result.get("frames_analyzed", 1) > 1:
-                    st.caption(f"Analyzed {result['frames_analyzed']} extracted frames")
+                # Still image annotation legend
+                if annotations:
+                    gap(12)
+                    ann_html = '<div style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:10px;padding:16px 20px;">'
+                    for ann in annotations[:6]:
+                        sev  = ann.get("severity", "warning")
+                        col  = {"strength": "#10B981", "warning": "#F59E0B", "error": "#EF4444"}.get(sev, "#F59E0B")
+                        num  = ann.get("number", "")
+                        lbl  = e(ann.get("label", ""))
+                        note = e(ann.get("note", ""))
+                        ann_html += (
+                            f'<div style="display:flex;gap:12px;padding:8px 0;'
+                            f'border-bottom:1px solid #141414;align-items:flex-start;">'
+                            f'<div style="background:{col};color:#000;font-size:11px;font-weight:800;'
+                            f'min-width:22px;height:22px;border-radius:50%;display:flex;'
+                            f'align-items:center;justify-content:center;flex-shrink:0;">{num}</div>'
+                            f'<div><div style="color:{col};font-size:11px;font-weight:700;'
+                            f'text-transform:uppercase;letter-spacing:1px;">{lbl}</div>'
+                            f'<div style="color:#777;font-size:12px;line-height:1.5;margin-top:2px;">{note}</div>'
+                            f'</div></div>'
+                        )
+                    ann_html += '</div>'
+                    st.markdown(ann_html, unsafe_allow_html=True)
 
         with col_scores:
             label("Performance Scores")
@@ -1029,11 +1074,11 @@ with tab_single:
                 file_name=f"tactify_{uploaded_file.name.rsplit('.', 1)[0]}.json",
                 mime="application/json",
             )
-        if is_video and video_with_audio:
+        if is_video and final_video:
             with dl_cols[2]:
                 st.download_button(
-                    "⬇ Video + Audio",
-                    data=video_with_audio,
+                    "⬇ Coaching Video",
+                    data=final_video,
                     file_name=f"tactify_coached_{uploaded_file.name}",
                     mime="video/mp4",
                 )
