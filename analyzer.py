@@ -711,162 +711,135 @@ def create_annotated_video_simple(
     progress_callback=None,
 ) -> bytes | None:
     """
-    Annotate video frames using ffmpeg (frame extraction) + Pillow (drawing).
-    No MediaPipe or OpenCV required. Annotations are drawn at static positions.
+    Burn annotation dots + score panel into video using ffmpeg drawbox/drawtext filters.
+    Processes the video stream directly — no per-frame Python overhead.
     """
     import shutil, subprocess
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+    if not shutil.which("ffmpeg"):
         return None
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tv:
         tv.write(video_bytes)
         vpath = tv.name
-
-    frames_dir = tempfile.mkdtemp()
-    out_path   = vpath + "_annotated.mp4"
+    out_path = vpath + "_annotated.mp4"
 
     try:
-        # Get video info
+        # Get dimensions for position calculations
         probe = subprocess.run(
-            ["ffprobe", "-v", "error",
-             "-select_streams", "v:0",
-             "-show_entries", "stream=width,height,r_frame_rate",
-             "-show_entries", "format=duration",
-             "-of", "json", vpath],
-            capture_output=True, text=True, timeout=15,
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "json", vpath],
+            capture_output=True, text=True, timeout=10,
         )
-        info     = json.loads(probe.stdout)
-        stream   = info.get("streams", [{}])[0]
-        w        = int(stream.get("width",  640))
-        h        = int(stream.get("height", 360))
-        fps_str  = stream.get("r_frame_rate", "30/1")
-        num, den = (int(x) for x in fps_str.split("/"))
-        fps      = num / den if den else 30.0
-        duration = float(info.get("format", {}).get("duration", 0) or 0)
+        info   = json.loads(probe.stdout)
+        stream = info.get("streams", [{}])[0]
+        w      = int(stream.get("width",  640))
+        h      = int(stream.get("height", 360))
 
-        if duration == 0:
-            return None
-
-        if progress_callback:
-            progress_callback(0.05, "Extracting frames…")
-
-        # Extract all frames
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", vpath,
-             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-             f"{frames_dir}/%06d.jpg"],
-            capture_output=True, timeout=120,
-        )
-
-        frame_files = sorted(
-            [f for f in os.listdir(frames_dir) if f.endswith(".jpg")]
-        )
-        if not frame_files:
-            return None
-
-        total = len(frame_files)
-
-        # Build annotation objects with static positions
-        from PIL import Image, ImageDraw, ImageFont
+        # Build ffmpeg filter chain
         sev_colors = {
-            "strength": (0, 255, 135),
-            "warning":  (255, 199, 0),
-            "error":    (255, 68, 68),
+            "strength": "0x00FF87",
+            "warning":  "0xFFC700",
+            "error":    "0xFF4444",
         }
+        filters = []
 
-        # Pre-compute annotation positions from fallback fractions
-        ann_positions = []
+        # Annotation dots + labels
         for ann in annotations[:6]:
             region = ann.get("region", "upper_body")
             fx, fy = _REGION_FALLBACK.get(region, (0.5, 0.3))
-            ann_positions.append({
-                "px":  int(fx * w),
-                "py":  int(fy * h),
-                "num": ann.get("number", 1),
-                "lbl": ann.get("label", ""),
-                "sev": ann.get("severity", "warning"),
-            })
+            px = int(fx * w)
+            py = int(fy * h)
+            num = ann.get("number", 1)
+            lbl = ann.get("label", "")[:20].replace("'", "")
+            sev = ann.get("severity", "warning")
+            c   = sev_colors.get(sev, "0xFFC700")
 
-        # Score overlay data
+            # Outer glow ring
+            filters.append(
+                f"drawbox=x={px-14}:y={py-14}:w=28:h=28:"
+                f"color={c}@0.3:t=fill"
+            )
+            # Solid dot
+            filters.append(
+                f"drawbox=x={px-7}:y={py-7}:w=14:h=14:"
+                f"color={c}@0.9:t=fill"
+            )
+            # Line to label
+            lx = px + (90 if px < w // 2 else -90)
+            ly = py - 30
+            filters.append(
+                f"drawbox=x={min(px,lx)}:y={py}:w={abs(lx-px)}:h=2:"
+                f"color={c}@0.7:t=fill"
+            )
+            filters.append(
+                f"drawbox=x={lx}:y={min(py,ly)}:w=2:h={abs(py-ly)}:"
+                f"color={c}@0.7:t=fill"
+            )
+            # Number badge
+            filters.append(
+                f"drawbox=x={lx-10}:y={ly-10}:w=20:h=20:"
+                f"color={c}@0.9:t=fill"
+            )
+            filters.append(
+                f"drawtext=text='{num}':x={lx-5}:y={ly-7}:"
+                f"fontsize=12:fontcolor=black:font=bold"
+            )
+            # Label text
+            if lbl:
+                tx = lx + (14 if px < w // 2 else -len(lbl)*7 - 14)
+                filters.append(
+                    f"drawtext=text='{lbl}':x={tx}:y={ly-8}:"
+                    f"fontsize=11:fontcolor={c}:font=bold"
+                )
+
+        # Score panel (bottom right)
         score_cats = [
-            ("TEC", scores.get("technique",        5)),
-            ("POS", scores.get("body_position",    5)),
-            ("SPA", scores.get("spatial_awareness",5)),
-            ("DEC", scores.get("decision_making",  5)),
-            ("EFF", scores.get("effort",           5)),
+            ("TEC", scores.get("technique",         5)),
+            ("POS", scores.get("body_position",     5)),
+            ("SPA", scores.get("spatial_awareness", 5)),
+            ("DEC", scores.get("decision_making",   5)),
+            ("EFF", scores.get("effort",            5)),
         ]
+        panel_h = len(score_cats) * 20 + 28
+        px0 = w - 130
+        py0 = h - panel_h - 8
+        filters.append(
+            f"drawbox=x={px0-6}:y={py0-6}:w=128:h={panel_h+10}:"
+            f"color=0x060606@0.85:t=fill"
+        )
+        filters.append(
+            f"drawtext=text='TACTIFY':x={px0}:y={py0}:"
+            f"fontsize=10:fontcolor=0x00FF87:font=bold"
+        )
+        for j, (lbl, val) in enumerate(score_cats):
+            y  = py0 + 16 + j * 20
+            bc = "0x00FF87" if val >= 8 else "0xFFC700" if val >= 6 else "0xFF4444"
+            # Background bar
+            filters.append(
+                f"drawbox=x={px0}:y={y+4}:w=80:h=10:color=0x1a1a1a@0.9:t=fill"
+            )
+            # Value bar
+            bw = max(1, int(80 * val / 10))
+            filters.append(
+                f"drawbox=x={px0}:y={y+4}:w={bw}:h=10:color={bc}@0.85:t=fill"
+            )
+            filters.append(
+                f"drawtext=text='{lbl} {val}':x={px0}:y={y}:"
+                f"fontsize=10:fontcolor=0xaaaaaa:font=bold"
+            )
 
-        if progress_callback:
-            progress_callback(0.15, "Annotating frames…")
+        vf = ",".join(filters)
 
-        for i, fname in enumerate(frame_files):
-            fpath = os.path.join(frames_dir, fname)
-            img   = Image.open(fpath).convert("RGB")
-            draw  = ImageDraw.Draw(img, "RGBA")
-
-            # Draw callout dots + lines for each annotation
-            for ap in ann_positions:
-                px, py = ap["px"], ap["py"]
-                c      = sev_colors.get(ap["sev"], (255, 199, 0))
-                ca     = c + (180,)
-                # Pulsing dot
-                draw.ellipse([px-12, py-12, px+12, py+12], fill=c+(40,), outline=c+(200,), width=2)
-                draw.ellipse([px-6,  py-6,  px+6,  py+6],  fill=c)
-                # Dashed line to callout box
-                cx = px + (120 if px < w // 2 else -120)
-                cy = py - 40
-                for seg in range(0, int(((cx-px)**2+(cy-py)**2)**0.5), 12):
-                    t  = seg / max(((cx-px)**2+(cy-py)**2)**0.5, 1)
-                    t2 = min((seg+7) / max(((cx-px)**2+(cy-py)**2)**0.5, 1), 1)
-                    x1 = int(px + (cx-px)*t);  y1 = int(py + (cy-py)*t)
-                    x2 = int(px + (cx-px)*t2); y2 = int(py + (cy-py)*t2)
-                    draw.line([x1, y1, x2, y2], fill=c+(160,), width=2)
-                # Badge circle
-                draw.ellipse([cx-10, cy-10, cx+10, cy+10], fill=c, outline=(255,255,255,180), width=1)
-                try:
-                    font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
-                except Exception:
-                    font_sm = ImageFont.load_default()
-                draw.text((cx, cy), str(ap["num"]), fill=(10,10,10), font=font_sm, anchor="mm")
-
-            # Score panel (bottom right)
-            px0 = w - 120;  py0 = h - (len(score_cats) * 22 + 30)
-            draw.rectangle([px0-8, py0-8, w-4, h-4], fill=(6,6,6,210))
-            try:
-                font_t = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 10)
-            except Exception:
-                font_t = ImageFont.load_default()
-            draw.text((px0, py0), "TACTIFY", fill=(0,255,135,230), font=font_t)
-            for j, (lbl, val) in enumerate(score_cats):
-                y = py0 + 16 + j * 22
-                bar_c = (0,255,135) if val >= 8 else (255,199,0) if val >= 6 else (255,68,68)
-                draw.rectangle([px0, y+3, px0+80, y+13], fill=(30,30,30,180))
-                draw.rectangle([px0, y+3, px0+int(80*val/10), y+13], fill=bar_c+(200,))
-                draw.text((px0, y), f"{lbl} {val}", fill=(180,180,180), font=font_t)
-
-            img.save(fpath, "JPEG", quality=85)
-
-            if progress_callback and i % max(total//20, 1) == 0:
-                progress_callback(0.15 + 0.70 * (i / total), f"Annotating frame {i+1}/{total}…")
-
-        if progress_callback:
-            progress_callback(0.85, "Encoding video…")
-
-        # Reassemble with ffmpeg
         subprocess.run(
-            ["ffmpeg", "-y",
-             "-framerate", str(fps),
-             "-i", f"{frames_dir}/%06d.jpg",
+            ["ffmpeg", "-y", "-i", vpath,
+             "-vf", vf,
              "-c:v", "libx264",
              "-pix_fmt", "yuv420p",
-             "-crf", "23",
+             "-crf", "22",
              "-movflags", "+faststart",
              out_path],
-            capture_output=True, timeout=120,
+            capture_output=True, timeout=180,
         )
-
-        if progress_callback:
-            progress_callback(1.0, "Done!")
 
         if os.path.exists(out_path):
             with open(out_path, "rb") as f:
@@ -876,9 +849,6 @@ def create_annotated_video_simple(
     except Exception:
         return None
     finally:
-        import shutil as _sh
-        try: _sh.rmtree(frames_dir)
-        except OSError: pass
         for p in [vpath, out_path]:
             try: os.unlink(p)
             except OSError: pass

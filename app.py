@@ -875,13 +875,15 @@ with tab_single:
         with st.spinner("Generating coaching audio…"):
             audio_bytes = generate_coaching_audio(data, position)
 
-        # ── Step 3: Merge audio into original video ───────────────────────────
-        # Merging audio into the original video is fast and memory-safe.
-        # Annotated callouts are shown as key frames below the video.
+        # ── Step 3: Annotate video with ffmpeg filters ────────────────────────
         video_with_audio = None
-        if is_video and audio_bytes:
-            with st.spinner("Merging coaching audio into video…"):
-                video_with_audio = merge_audio_into_video(file_bytes, audio_bytes)
+        if is_video:
+            with st.spinner("Adding coaching overlay to video…"):
+                video_with_audio = create_annotated_video_simple(
+                    file_bytes, annotations, scores
+                )
+            if not video_with_audio:
+                video_with_audio = file_bytes  # fallback to original
 
         # ── Summary banner ─────────────────────────────────────────────────────
         st.markdown(f"""
@@ -898,11 +900,19 @@ with tab_single:
 
         with col_media:
             if is_video:
-                label("Video · Coaching Audio Included")
-                st.video(video_with_audio if video_with_audio else file_bytes)
-                if video_with_audio:
-                    st.caption("🎙 Coaching narration is embedded — hit play to hear the AI coach while you watch")
-                # Annotated key frames below video
+                label("Annotated Video")
+                st.video(video_with_audio)
+                # Coaching audio as separate player so it runs full length
+                if audio_bytes:
+                    gap(8)
+                    st.markdown(
+                        '<div style="color:#444;font-size:10px;letter-spacing:2px;'
+                        'text-transform:uppercase;font-weight:700;margin-bottom:4px;">'
+                        '🎙 Coaching Narration — play while watching the video</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.audio(audio_bytes, format="audio/mp3")
+                # Annotated key frames
                 if result.get("key_frames"):
                     gap(16)
                     label("Annotated Key Frames")
@@ -1012,12 +1022,12 @@ with tab_single:
                 file_name=f"tactify_{uploaded_file.name.rsplit('.', 1)[0]}.json",
                 mime="application/json",
             )
-        if is_video and annotated_video:
+        if is_video and video_with_audio:
             with dl_cols[2]:
                 st.download_button(
-                    "⬇ Annotated Video",
-                    data=annotated_video,
-                    file_name=f"tactify_annotated_{uploaded_file.name}",
+                    "⬇ Video + Audio",
+                    data=video_with_audio,
+                    file_name=f"tactify_coached_{uploaded_file.name}",
                     mime="video/mp4",
                 )
 
