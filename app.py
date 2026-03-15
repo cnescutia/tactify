@@ -15,31 +15,21 @@ import streamlit as st
 import streamlit.components.v1 as st_components
 from dotenv import load_dotenv
 
-try:
-    from knowledge_base import POSITIONS, PLAY_TYPES, AGE_GROUPS
-    from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
-                           generate_comparison_audio, analyze_team_patterns,
-                           merge_audio_into_video, create_annotated_video_simple)
-except Exception as _import_err:
-    import traceback as _tb
-    st.set_page_config(page_title="Tactify", page_icon="⚽")
-    st.error(f"**Startup import error:** {_import_err}")
-    st.code(_tb.format_exc(), language="text")
-    st.stop()
+from knowledge_base import POSITIONS, PLAY_TYPES, AGE_GROUPS
+from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
+                       generate_comparison_audio, analyze_team_patterns,
+                       merge_audio_into_video, create_annotated_video_simple)
 
 load_dotenv()
-print("CHECKPOINT 1: imports OK, dotenv loaded")
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
-print("CHECKPOINT 2: calling set_page_config")
 st.set_page_config(
     page_title="Tactify · AI Soccer Coaching",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-print("CHECKPOINT 3: set_page_config OK")
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
 
@@ -796,7 +786,6 @@ def _st_excepthook(exc_type, exc_value, exc_tb):
     _orig_excepthook(exc_type, exc_value, exc_tb)
 _sys.excepthook = _st_excepthook
 
-print("CHECKPOINT 4: reaching main app body")
 # ── Shared report intercept ───────────────────────────────────────────────────
 _report_param = st.query_params.get("report")
 if _report_param:
@@ -832,32 +821,24 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-print("CHECKPOINT 5: creating tabs")
 # ── Mode Tabs ─────────────────────────────────────────────────────────────────
 
 tab_single, tab_compare, tab_team = st.tabs(["Single Session", "Before / After Comparison", "Team Dashboard"])
-print("CHECKPOINT 6: tabs created")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Single Session
 # ══════════════════════════════════════════════════════════════════════════════
 
-print("CHECKPOINT 7: entering tab_single")
 with tab_single:
-    print("CHECKPOINT 7a: inside tab_single, calling st.columns")
     col_up, col_ctx = st.columns([1.5, 1], gap="large")
-    print("CHECKPOINT 7b: columns created")
 
     with col_up:
-        print("CHECKPOINT 7c: inside col_up, calling label()")
         label("Upload Footage")
-        print("CHECKPOINT 7d: calling file_uploader")
         uploaded_file = st.file_uploader(
             "footage",
             type=["jpg", "jpeg", "png", "mp4", "mov"],
             label_visibility="collapsed",
         )
-        print("CHECKPOINT 7e: file_uploader done")
         if uploaded_file:
             file_bytes = uploaded_file.read()
             is_video = uploaded_file.type in ("video/mp4", "video/quicktime")
@@ -866,24 +847,15 @@ with tab_single:
             else:
                 st.image(file_bytes, use_container_width=True)
 
-    print("CHECKPOINT 7f: inside col_ctx")
     with col_ctx:
-        print("CHECKPOINT 7g: calling label Analysis Context")
         label("Analysis Context")
-        print("CHECKPOINT 7h: calling selectbox Position")
         position  = st.selectbox("Position",  POSITIONS,  index=6,  label_visibility="collapsed")
-        print("CHECKPOINT 7i: calling selectbox Play Type")
         play_type = st.selectbox("Play Type", PLAY_TYPES, index=8,  label_visibility="collapsed")
-        print("CHECKPOINT 7j: calling selectbox Age Group")
         age_group = st.selectbox("Age Group", AGE_GROUPS, index=3,  label_visibility="collapsed")
-        print("CHECKPOINT 7k: calling text_area Notes")
         notes     = st.text_area("Notes", height=80, label_visibility="collapsed",
                                   placeholder="e.g. right-footed striker, focus on off-ball movement…")
-        print("CHECKPOINT 7l: calling gap(10)")
         gap(10)
-        print("CHECKPOINT 7m: calling st.button")
         run = st.button("Run Analysis ▶", use_container_width=True, disabled=not uploaded_file)
-        print("CHECKPOINT 7n: button done")
 
     st.markdown('<hr>', unsafe_allow_html=True)
 
