@@ -773,6 +773,19 @@ def render_shared_report(data: dict):
 # APP
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Global exception hook — shows real traceback instead of "Oh no" ──────────
+import sys as _sys
+import traceback as _tb
+_orig_excepthook = _sys.excepthook
+def _st_excepthook(exc_type, exc_value, exc_tb):
+    try:
+        st.error(f"**App error:** {exc_type.__name__}: {exc_value}")
+        st.code("".join(_tb.format_tb(exc_tb)), language="text")
+    except Exception:
+        pass
+    _orig_excepthook(exc_type, exc_value, exc_tb)
+_sys.excepthook = _st_excepthook
+
 # ── Shared report intercept ───────────────────────────────────────────────────
 _report_param = st.query_params.get("report")
 if _report_param:
