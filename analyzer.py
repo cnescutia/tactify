@@ -176,17 +176,42 @@ def _parse_json(text: str) -> dict | None:
 
 
 def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
-    try:
-        import cv2
-    except ImportError:
-        return []
+    """Extract evenly-spaced frames from video bytes. Tries ffmpeg first, falls back to OpenCV."""
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp.write(video_bytes)
         path = tmp.name
+
     try:
+        # ── Try ffmpeg (reliable on Linux/Streamlit Cloud) ──────────────────
+        import subprocess, shutil
+        if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+            # Get duration via ffprobe
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True, text=True, timeout=15,
+            )
+            duration = float(probe.stdout.strip()) if probe.stdout.strip() else 0
+            if duration > 0:
+                frames = []
+                for i in range(num_frames):
+                    ts = duration * (i + 1) / (num_frames + 1)
+                    result = subprocess.run(
+                        ["ffmpeg", "-ss", str(ts), "-i", path,
+                         "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
+                        capture_output=True, timeout=20,
+                    )
+                    if result.returncode == 0 and result.stdout:
+                        frames.append(result.stdout)
+                if frames:
+                    return frames
+
+        # ── Fallback: OpenCV ────────────────────────────────────────────────
+        import cv2
         cap   = cv2.VideoCapture(path)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total == 0:
+            cap.release()
             return []
         frames = []
         for i in range(num_frames):
@@ -198,8 +223,14 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
                 frames.append(buf.tobytes())
         cap.release()
         return frames
+
+    except Exception:
+        return []
     finally:
-        os.unlink(path)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 # ── Still image annotation (Pillow) ───────────────────────────────────────────
