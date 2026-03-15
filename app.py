@@ -875,32 +875,13 @@ with tab_single:
         with st.spinner("Generating coaching audio…"):
             audio_bytes = generate_coaching_audio(data, position)
 
-        # ── Step 3: Annotated video + merge audio ─────────────────────────────
-        annotated_video = None
-        if is_video and annotations:
-            progress_bar  = st.progress(0.0, text="Annotating video…")
-            progress_text = st.empty()
-
-            def _on_progress(pct: float, msg: str = ""):
-                progress_bar.progress(min(float(pct), 1.0))
-                if msg:
-                    progress_text.markdown(
-                        f'<div style="color:#333;font-size:11px;">{msg}</div>',
-                        unsafe_allow_html=True,
-                    )
-
-            annotated_video = create_annotated_video_simple(
-                file_bytes, annotations, scores, progress_callback=_on_progress
-            )
-            progress_bar.empty()
-            progress_text.empty()
-
-            # Merge coaching audio into annotated video
-            if annotated_video and audio_bytes:
-                with st.spinner("Merging coaching audio into video…"):
-                    merged = merge_audio_into_video(annotated_video, audio_bytes)
-                    if merged:
-                        annotated_video = merged
+        # ── Step 3: Merge audio into original video ───────────────────────────
+        # Merging audio into the original video is fast and memory-safe.
+        # Annotated callouts are shown as key frames below the video.
+        video_with_audio = None
+        if is_video and audio_bytes:
+            with st.spinner("Merging coaching audio into video…"):
+                video_with_audio = merge_audio_into_video(file_bytes, audio_bytes)
 
         # ── Summary banner ─────────────────────────────────────────────────────
         st.markdown(f"""
@@ -912,23 +893,23 @@ with tab_single:
         </div>
         """, unsafe_allow_html=True)
 
-        if audio_bytes:
-            st.markdown(
-                '<div style="color:#444;font-size:10px;letter-spacing:3px;text-transform:uppercase;'
-                'font-weight:700;margin-bottom:6px;">🎙 Coaching Narration</div>',
-                unsafe_allow_html=True,
-            )
-            st.audio(audio_bytes, format="audio/mp3")
-            gap(20)
-
         # ── Media + Scores ─────────────────────────────────────────────────────
         col_media, col_scores = st.columns([1.2, 1], gap="large")
 
         with col_media:
-            if is_video and annotated_video:
-                label("Annotated Video · Pose Tracked")
-                st.video(annotated_video)
-                st.caption("Callout lines track the player's body in real-time · Score panel bottom-right")
+            if is_video:
+                label("Video · Coaching Audio Included")
+                st.video(video_with_audio if video_with_audio else file_bytes)
+                if video_with_audio:
+                    st.caption("🎙 Coaching narration is embedded — hit play to hear the AI coach while you watch")
+                # Annotated key frames below video
+                if result.get("key_frames"):
+                    gap(16)
+                    label("Annotated Key Frames")
+                    kf_cols = st.columns(len(result["key_frames"][:4]), gap="small")
+                    for kf_col, kf in zip(kf_cols, result["key_frames"][:4]):
+                        with kf_col:
+                            st.image(kf, use_container_width=True)
             else:
                 label("Annotated Analysis")
                 display = result.get("annotated_image") or file_bytes
