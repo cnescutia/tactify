@@ -1381,7 +1381,7 @@ with tab_team:
                                   label_visibility="visible", key=f"tm_name_{i}")
             ppos  = st.selectbox("Position", POSITIONS, index=6,
                                   label_visibility="collapsed", key=f"tm_pos_{i}")
-            pfile = st.file_uploader("", type=["jpg","jpeg","png","mp4","mov"],
+            pfile = st.file_uploader("Upload footage", type=["jpg","jpeg","png","mp4","mov"],
                                       label_visibility="collapsed", key=f"tm_file_{i}")
             if pfile:
                 pb = pfile.read()
