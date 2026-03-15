@@ -28,15 +28,18 @@ except Exception as _import_err:
     st.stop()
 
 load_dotenv()
+print("CHECKPOINT 1: imports OK, dotenv loaded")
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
+print("CHECKPOINT 2: calling set_page_config")
 st.set_page_config(
     page_title="Tactify · AI Soccer Coaching",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+print("CHECKPOINT 3: set_page_config OK")
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
 
@@ -793,6 +796,7 @@ def _st_excepthook(exc_type, exc_value, exc_tb):
     _orig_excepthook(exc_type, exc_value, exc_tb)
 _sys.excepthook = _st_excepthook
 
+print("CHECKPOINT 4: reaching main app body")
 # ── Shared report intercept ───────────────────────────────────────────────────
 _report_param = st.query_params.get("report")
 if _report_param:
@@ -828,14 +832,17 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+print("CHECKPOINT 5: creating tabs")
 # ── Mode Tabs ─────────────────────────────────────────────────────────────────
 
 tab_single, tab_compare, tab_team = st.tabs(["Single Session", "Before / After Comparison", "Team Dashboard"])
+print("CHECKPOINT 6: tabs created")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Single Session
 # ══════════════════════════════════════════════════════════════════════════════
 
+print("CHECKPOINT 7: entering tab_single")
 with tab_single:
     col_up, col_ctx = st.columns([1.5, 1], gap="large")
 
