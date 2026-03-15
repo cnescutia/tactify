@@ -682,7 +682,7 @@ def analyze_media(
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=2800,
+            max_tokens=4096,
             messages=[{"role": "user", "content": content}],
         )
         data = _parse_json(response.content[0].text)
