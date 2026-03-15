@@ -15,10 +15,17 @@ import streamlit as st
 import streamlit.components.v1 as st_components
 from dotenv import load_dotenv
 
-from knowledge_base import POSITIONS, PLAY_TYPES, AGE_GROUPS
-from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
-                       generate_comparison_audio, analyze_team_patterns,
-                       merge_audio_into_video, create_annotated_video_simple)
+try:
+    from knowledge_base import POSITIONS, PLAY_TYPES, AGE_GROUPS
+    from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
+                           generate_comparison_audio, analyze_team_patterns,
+                           merge_audio_into_video, create_annotated_video_simple)
+except Exception as _import_err:
+    import traceback as _tb
+    st.set_page_config(page_title="Tactify", page_icon="⚽")
+    st.error(f"**Startup import error:** {_import_err}")
+    st.code(_tb.format_exc(), language="text")
+    st.stop()
 
 load_dotenv()
 
