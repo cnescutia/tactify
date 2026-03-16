@@ -242,54 +242,73 @@ def _parse_json(text: str) -> dict | None:
 
 def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
     """
-    Extract evenly-spaced frames using imageio_ffmpeg (no ffprobe needed).
-    Decodes at 1 fps to keep memory low, then picks evenly-spaced samples.
+    Extract evenly-spaced frames without ffprobe.
+    Uses imageio_ffmpeg for duration metadata, then the bundled ffmpeg binary
+    for reliable per-timestamp frame extraction via PNG pipe.
     """
+    import subprocess
+
     try:
         import imageio_ffmpeg
-        from PIL import Image
+    except ImportError:
+        return []
 
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            tmp.write(video_bytes)
-            path = tmp.name
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp.write(video_bytes)
+        path = tmp.name
 
+    try:
+        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+
+        # ── Get duration via imageio_ffmpeg metadata (no ffprobe needed) ─────
+        duration = 0.0
         try:
-            gen = imageio_ffmpeg.read_frames(
-                path,
-                output_params=["-vf", "fps=1"],  # decode 1 frame/sec — memory efficient
-            )
-            meta         = next(gen)
-            w, h         = meta["size"]
-            sample_frames = []
-            for frame in gen:
-                sample_frames.append(frame)
-                if len(sample_frames) >= 300:   # hard cap at 5 min of video
-                    break
+            gen      = imageio_ffmpeg.read_frames(path)
+            meta     = next(gen)
             gen.close()
+            duration = float(meta.get("duration") or 0)
+        except Exception:
+            duration = 0.0
 
-            if not sample_frames:
-                return []
+        # Build seek timestamps
+        if duration > 0.5:
+            timestamps = [duration * (i + 1) / (num_frames + 1) for i in range(num_frames)]
+        else:
+            # Very short clip — grab first frame multiple times (still works)
+            timestamps = [0.0] * num_frames
 
-            n       = len(sample_frames)
-            indices = [int(n * (i + 1) / (num_frames + 1)) for i in range(num_frames)]
+        # ── Extract one frame per timestamp via PNG pipe ──────────────────────
+        result = []
+        for ts in timestamps:
+            cmd = [ffmpeg_bin, "-y"]
+            if ts > 0:
+                cmd += ["-ss", f"{ts:.3f}"]
+            cmd += ["-i", path,
+                    "-frames:v", "1",
+                    "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
+            r = subprocess.run(cmd, capture_output=True, timeout=20)
+            if r.returncode == 0 and len(r.stdout) > 100:
+                result.append(r.stdout)
 
-            result = []
-            for idx in indices:
-                idx = min(max(0, idx), n - 1)
-                img = Image.frombytes("RGB", (w, h), sample_frames[idx])
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=90)
-                result.append(buf.getvalue())
-            return result
+        # ── Fallback: first frame if nothing worked ───────────────────────────
+        if not result:
+            r = subprocess.run(
+                [ffmpeg_bin, "-y", "-i", path,
+                 "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
+                capture_output=True, timeout=20,
+            )
+            if r.returncode == 0 and len(r.stdout) > 100:
+                result = [r.stdout] * num_frames
 
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        return result
 
     except Exception:
         return []
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 
