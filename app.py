@@ -18,7 +18,9 @@ from dotenv import load_dotenv
 from knowledge_base import POSITIONS, PLAY_TYPES, AGE_GROUPS
 from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
                        generate_comparison_audio, analyze_team_patterns,
-                       merge_audio_into_video, create_annotated_video_simple)
+                       merge_audio_into_video, create_annotated_video_simple,
+                       extract_moment_clip)
+from pdf_report import generate_pdf_report
 
 load_dotenv()
 
@@ -878,15 +880,20 @@ with tab_single:
         except Exception as _ae:
             audio_bytes = None
 
-        # ── Step 3: Annotate video + merge audio (one-click experience) ───────
+        # ── Step 3: Annotate video + merge audio + extract key clips ───────────
         final_video = None
+        annotated_video = None   # visual-only; used in HTML player
+        best_clip   = None
+        worst_clip  = None
+        num_kf      = len(result.get("key_frames", [])) or 4
         if is_video:
             try:
                 with st.spinner("Adding coaching overlay to video…"):
-                    annotated = create_annotated_video_simple(
-                        file_bytes, annotations, scores
+                    annotated_video = create_annotated_video_simple(
+                        file_bytes, annotations, scores,
+                        skeleton=data.get("skeleton"),
                     )
-                base_video = annotated if annotated else file_bytes
+                base_video = annotated_video if annotated_video else file_bytes
                 if audio_bytes:
                     with st.spinner("Merging coaching audio into video…"):
                         merged = merge_audio_into_video(base_video, audio_bytes)
@@ -895,6 +902,17 @@ with tab_single:
                     final_video = base_video
             except Exception as _ve:
                 final_video = file_bytes
+                annotated_video = file_bytes
+
+            # ── Extract best / worst moment clips ─────────────────────────────
+            best_fn  = data.get("best_moment",  {}).get("frame", 1)
+            worst_fn = data.get("worst_moment", {}).get("frame", 1)
+            try:
+                with st.spinner("Extracting key moment clips…"):
+                    best_clip  = extract_moment_clip(file_bytes, best_fn,  num_kf)
+                    worst_clip = extract_moment_clip(file_bytes, worst_fn, num_kf)
+            except Exception:
+                pass
 
         # ── Summary banner ─────────────────────────────────────────────────────
         sum_col, aud_col = st.columns([1.6, 1], gap="large")
@@ -908,7 +926,8 @@ with tab_single:
             </div>
             """, unsafe_allow_html=True)
         with aud_col:
-            if audio_bytes:
+            # For images show standalone audio player; for videos it's synced in HTML player below
+            if audio_bytes and not is_video:
                 st.markdown(
                     '<div style="color:#444;font-size:10px;letter-spacing:3px;'
                     'text-transform:uppercase;font-weight:700;margin-bottom:8px;">🎙 Coaching Audio</div>',
@@ -922,12 +941,48 @@ with tab_single:
         with col_media:
             if is_video:
                 label("Coaching Video — Press Play")
-                st.markdown(
-                    '<div style="color:#555;font-size:11px;letter-spacing:1px;margin-bottom:8px;">'
-                    'Audio coaching narration is embedded · dots and lines show focus areas</div>',
-                    unsafe_allow_html=True,
-                )
-                st.video(final_video)
+                _play_video = annotated_video if annotated_video else (final_video or file_bytes)
+                _vid_size   = len(_play_video) if _play_video else 0
+                _use_sync   = bool(audio_bytes and _play_video and _vid_size < 25 * 1024 * 1024)
+                if _use_sync:
+                    st.markdown(
+                        '<div style="color:#555;font-size:11px;letter-spacing:1px;margin-bottom:8px;">'
+                        'Audio coaching narration plays automatically · dots and arrows show focus areas</div>',
+                        unsafe_allow_html=True,
+                    )
+                    _vid_b64 = base64.b64encode(_play_video).decode()
+                    _aud_b64 = base64.b64encode(audio_bytes).decode()
+                    st_components.html(f"""
+<div style="border-radius:10px;overflow:hidden;background:#000;">
+  <video id="tac_v" controls style="width:100%;display:block;max-height:420px;">
+    <source src="data:video/mp4;base64,{_vid_b64}" type="video/mp4">
+  </video>
+  <audio id="tac_a">
+    <source src="data:audio/mp3;base64,{_aud_b64}" type="audio/mp3">
+  </audio>
+</div>
+<script>
+(function(){{
+  var v=document.getElementById('tac_v'), a=document.getElementById('tac_a');
+  function sync(){{ a.currentTime=v.currentTime; }}
+  v.addEventListener('play',     function(){{ sync(); a.play(); }});
+  v.addEventListener('pause',    function(){{ a.pause(); }});
+  v.addEventListener('seeked',   function(){{ sync(); if(!v.paused) a.play(); }});
+  v.addEventListener('ended',    function(){{ a.pause(); a.currentTime=0; }});
+  v.addEventListener('ratechange', function(){{ a.playbackRate=v.playbackRate; }});
+}})();
+</script>
+""", height=460)
+                else:
+                    # Fallback: large video or no audio — use native player
+                    st.markdown(
+                        '<div style="color:#555;font-size:11px;letter-spacing:1px;margin-bottom:8px;">'
+                        'Coaching audio embedded · dots and arrows show focus areas</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.video(final_video if final_video else file_bytes)
+                    if audio_bytes:
+                        st.audio(audio_bytes, format="audio/mp3")
 
                 # Annotated key frames with coaching legend
                 if result.get("key_frames"):
@@ -1010,6 +1065,29 @@ with tab_single:
                 data.get("worst_moment", {}),
             )
 
+            # ── Best / Worst moment video clips ────────────────────────────────
+            if is_video and (best_clip or worst_clip):
+                gap(16)
+                clip_cols = st.columns(2, gap="large")
+                _CLIP_STYLE = (
+                    "font-size:9px;letter-spacing:3px;font-weight:700;"
+                    "text-transform:uppercase;margin-bottom:8px;"
+                )
+                with clip_cols[0]:
+                    if best_clip:
+                        st.markdown(
+                            f'<div style="color:#00FF87;{_CLIP_STYLE}">Best Moment</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.video(best_clip)
+                with clip_cols[1]:
+                    if worst_clip:
+                        st.markdown(
+                            f'<div style="color:#EF4444;{_CLIP_STYLE}">Worst Moment</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.video(worst_clip)
+
         # ── Fix Cards ──────────────────────────────────────────────────────────
         if data.get("fix_cards"):
             gap(32)
@@ -1068,15 +1146,33 @@ with tab_single:
 
         # ── Downloads ──────────────────────────────────────────────────────────
         gap(24)
-        dl_cols = st.columns([1, 1, 1, 2])
+        label("Downloads")
+        dl_cols = st.columns([1, 1, 1, 1])
+
+        # PDF scouting report (primary download)
         with dl_cols[0]:
-            report_html = build_report_card_html(data, result.get("key_frames", []), position, age_group)
-            st.download_button(
-                "⬇ Player Report Card",
-                data=report_html,
-                file_name=f"tactify_report_{uploaded_file.name.rsplit('.', 1)[0]}.html",
-                mime="text/html",
+            _pdf_bytes = generate_pdf_report(
+                data,
+                result.get("key_frames", []),
+                position,
+                age_group,
             )
+            if _pdf_bytes:
+                st.download_button(
+                    "⬇ PDF Scouting Report",
+                    data=_pdf_bytes,
+                    file_name=f"tactify_report_{uploaded_file.name.rsplit('.', 1)[0]}.pdf",
+                    mime="application/pdf",
+                )
+            else:
+                report_html = build_report_card_html(data, result.get("key_frames", []), position, age_group)
+                st.download_button(
+                    "⬇ Player Report Card",
+                    data=report_html,
+                    file_name=f"tactify_report_{uploaded_file.name.rsplit('.', 1)[0]}.html",
+                    mime="text/html",
+                )
+
         with dl_cols[1]:
             st.download_button(
                 "⬇ Raw Data (JSON)",
@@ -1091,6 +1187,14 @@ with tab_single:
                     data=final_video,
                     file_name=f"tactify_coached_{uploaded_file.name}",
                     mime="video/mp4",
+                )
+        if audio_bytes:
+            with dl_cols[3]:
+                st.download_button(
+                    "⬇ Coaching Audio",
+                    data=audio_bytes,
+                    file_name=f"tactify_audio_{uploaded_file.name.rsplit('.', 1)[0]}.mp3",
+                    mime="audio/mp3",
                 )
 
     elif not uploaded_file:

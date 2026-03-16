@@ -175,6 +175,36 @@ LANGUAGE STANDARD:
     "team":          "Current or most recent club / national team",
     "note":          "Why this specific pro is the benchmark for this exact technical element the player needs to improve. Be precise about which skill and why.",
     "youtube_query": "Search query to find a clip of this pro demonstrating that exact technique. Include: player name + specific skill + 'analysis' or 'tutorial'. E.g.: 'Rodri ball retention under pressure analysis'"
+  }},
+
+  "skeleton": {{
+    "frame": <integer 1–{num_frames} — the frame that shows the clearest full-body stance>,
+    "joints": {{
+      "head":           {{"x": <0-1>, "y": <0-1>}},
+      "left_shoulder":  {{"x": <0-1>, "y": <0-1>}},
+      "right_shoulder": {{"x": <0-1>, "y": <0-1>}},
+      "left_elbow":     {{"x": <0-1>, "y": <0-1>}},
+      "right_elbow":    {{"x": <0-1>, "y": <0-1>}},
+      "left_wrist":     {{"x": <0-1>, "y": <0-1>}},
+      "right_wrist":    {{"x": <0-1>, "y": <0-1>}},
+      "left_hip":       {{"x": <0-1>, "y": <0-1>}},
+      "right_hip":      {{"x": <0-1>, "y": <0-1>}},
+      "left_knee":      {{"x": <0-1>, "y": <0-1>}},
+      "right_knee":     {{"x": <0-1>, "y": <0-1>}},
+      "left_ankle":     {{"x": <0-1>, "y": <0-1>}},
+      "right_ankle":    {{"x": <0-1>, "y": <0-1>}}
+    }},
+    "key_angles": [
+      {{
+        "label":      "Short label, e.g. 'L Knee' or 'R Hip'",
+        "a":          "<proximal joint name from the joints dict>",
+        "b":          "<the measured joint — the vertex>",
+        "c":          "<distal joint name>",
+        "degrees":    <integer — estimated angle at this joint in degrees>,
+        "assessment": "<good|warning|error>",
+        "note":       "One sentence: why this angle matters for this specific action"
+      }}
+    ]
   }}
 }}
 
@@ -186,6 +216,7 @@ REQUIREMENTS:
 - No generic soccer advice. This is used by MLS coaches and players.
 - x_pct / y_pct: You are looking at the actual image. Estimate where the relevant body part ACTUALLY appears on screen. Do NOT use generic center values — look at the real pixel positions. A player standing to the right of frame has x_pct ~0.7; a player's foot near the bottom has y_pct ~0.85. Be precise.
 - vector field: Include ONLY when there is a clear directional correction or movement to show (body rotation, weight shift, pass direction, run path, hip opening). Use dx/dy as a normalized direction unit: positive x = right, negative x = left, positive y = downward, negative y = upward. Magnitude 0.15–0.55. Omit "vector" entirely for static technique issues (e.g. stiff ankle, wrong foot planted). Examples: hip needs to open left → {{"dx": -0.4, "dy": 0.1}}; player should step forward → {{"dx": 0.1, "dy": 0.35}}.
+- skeleton: Pick the ONE frame that shows the clearest full-body pose. Map every visible joint to its ACTUAL pixel position as x/y fractions. If a joint is hidden or out of frame set both to -1. Include 2–4 key_angles at the joints most relevant to the coaching feedback (e.g. knee flexion on contact, hip angle on pass). assessment=good means the angle is optimal for the action; warning means improvable; error means a technical flaw.
 """
 
 
@@ -335,14 +366,159 @@ def _load_fonts(fsize_num: int, fsize_label: int):
     return d, d
 
 
-def _build_overlay(w: int, h: int, annotations: list, scores: dict) -> "Image.Image":
+# Skeleton bone connections (joint_a, joint_b)
+_BONES = [
+    ("head",          "left_shoulder"),
+    ("head",          "right_shoulder"),
+    ("left_shoulder", "right_shoulder"),   # collar
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow",    "left_wrist"),
+    ("right_shoulder","right_elbow"),
+    ("right_elbow",   "right_wrist"),
+    ("left_shoulder", "left_hip"),         # torso left
+    ("right_shoulder","right_hip"),        # torso right
+    ("left_hip",      "right_hip"),        # pelvis
+    ("left_hip",      "left_knee"),
+    ("left_knee",     "left_ankle"),
+    ("right_hip",     "right_knee"),
+    ("right_knee",    "right_ankle"),
+]
+
+_ANGLE_COLOR = {
+    "good":    (16,  185, 129),   # neon green
+    "warning": (245, 158,  11),   # amber
+    "error":   (239,  68,  68),   # red
+}
+
+
+def _draw_skeleton_layer(w: int, h: int, skeleton: dict) -> "Image.Image":
     """
-    Render colored dots, directional arrows, callout labels, and score bars
-    onto a transparent RGBA canvas. Used by both still-image and video annotation.
+    Render a biomechanics skeleton overlay: bone lines, joint dots, and
+    angle arcs with degree labels onto a transparent RGBA canvas.
+    """
+    from PIL import Image, ImageDraw
+    import math as _math
+
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw  = ImageDraw.Draw(layer)
+
+    joints_raw = skeleton.get("joints", {})
+
+    # Convert normalised coords → pixel coords, skip hidden joints (x/y == -1)
+    joints: dict = {}
+    for name, jv in joints_raw.items():
+        if not isinstance(jv, dict):
+            continue
+        xn, yn = float(jv.get("x", -1)), float(jv.get("y", -1))
+        if xn < 0 or yn < 0 or xn > 1 or yn > 1:
+            continue
+        joints[name] = (int(xn * w), int(yn * h))
+
+    if not joints:
+        return layer
+
+    bone_w = max(2, w // 240)   # scale line width to image size
+
+    # ── Bone lines ────────────────────────────────────────────────────────────
+    for ja, jb in _BONES:
+        if ja in joints and jb in joints:
+            draw.line([joints[ja], joints[jb]], fill=(220, 220, 220, 130), width=bone_w)
+
+    # ── Joint dots ────────────────────────────────────────────────────────────
+    jr = max(4, w // 130)
+    for name, (px, py) in joints.items():
+        draw.ellipse([px - jr, py - jr, px + jr, py + jr],
+                     fill=(255, 255, 255, 200), outline=(0, 0, 0, 180), width=1)
+
+    # ── Angle arcs + degree labels ────────────────────────────────────────────
+    font_ang, _ = _load_fonts(max(11, w // 55), max(9, w // 70))
+
+    for ang in skeleton.get("key_angles", []):
+        ja, jb, jc = ang.get("a"), ang.get("b"), ang.get("c")
+        if not (ja in joints and jb in joints and jc in joints):
+            continue
+
+        ax, ay = joints[ja]
+        bx, by = joints[jb]
+        cx, cy = joints[jc]
+
+        # Vectors from vertex B
+        vax, vay = ax - bx, ay - by
+        vcx, vcy = cx - bx, cy - by
+        mag_a = _math.sqrt(vax**2 + vay**2) or 1
+        mag_c = _math.sqrt(vcx**2 + vcy**2) or 1
+
+        # Angle arc: use fractions of the shorter bone for arc radius
+        arc_r = max(18, int(min(mag_a, mag_c) * 0.35))
+        arc_r = min(arc_r, w // 12)
+
+        # Start/end angles for PIL arc (degrees from east/3 o'clock, clockwise)
+        angle_a = _math.degrees(_math.atan2(vay, vax))
+        angle_c = _math.degrees(_math.atan2(vcy, vcx))
+
+        # Always draw the shorter arc
+        diff = ((angle_c - angle_a + 180) % 360) - 180
+        start_deg = angle_a
+        end_deg   = angle_a + diff
+
+        c_rgb = _ANGLE_COLOR.get(ang.get("assessment", "warning"), _ANGLE_COLOR["warning"])
+
+        bbox = [bx - arc_r, by - arc_r, bx + arc_r, by + arc_r]
+        draw.arc(bbox, start=start_deg, end=end_deg, fill=(*c_rgb, 210), width=max(2, bone_w + 1))
+
+        # Degree label positioned along the bisector of the arc
+        mid_angle_rad = _math.radians((start_deg + end_deg) / 2)
+        lx = int(bx + (arc_r + max(14, w // 55)) * _math.cos(mid_angle_rad))
+        ly = int(by + (arc_r + max(14, w // 55)) * _math.sin(mid_angle_rad))
+        lx = max(4, min(w - 4, lx))
+        ly = max(4, min(h - 4, ly))
+
+        deg_text = f"{int(ang.get('degrees', 0))}°"
+        lbl_text = ang.get("label", "")
+
+        # Tiny dark pill background
+        try:
+            bbox_t = draw.textbbox((0, 0), deg_text, font=font_ang)
+            tw, th = bbox_t[2] - bbox_t[0], bbox_t[3] - bbox_t[1]
+        except AttributeError:
+            tw, th = len(deg_text) * 7, 12
+        pad = 3
+        pill = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        ImageDraw.Draw(pill).rectangle(
+            [lx - pad, ly - pad, lx + tw + pad, ly + th + pad],
+            fill=(*c_rgb, 200),
+        )
+        layer = Image.alpha_composite(layer, pill)
+        draw  = ImageDraw.Draw(layer)
+        draw.text((lx, ly), deg_text, fill=(10, 10, 10, 255), font=font_ang)
+
+        # Tiny label underneath degree (optional — only if it fits)
+        if lbl_text and w > 400:
+            _, font_lbl2 = _load_fonts(max(11, w // 55), max(9, w // 75))
+            draw.text((lx, ly + th + 2), lbl_text,
+                      fill=(*c_rgb, 180), font=font_lbl2)
+
+    return layer
+
+
+def _build_overlay(w: int, h: int, annotations: list, scores: dict,
+                   skeleton: dict | None = None) -> "Image.Image":
+    """
+    Render skeleton bones/angles (bottom layer), colored dots, directional arrows,
+    callout labels, and score bars onto a transparent RGBA canvas.
     """
     from PIL import Image, ImageDraw
 
     layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+    # Skeleton layer goes under everything else
+    if skeleton and isinstance(skeleton, dict) and skeleton.get("joints"):
+        try:
+            skel_layer = _draw_skeleton_layer(w, h, skeleton)
+            layer = Image.alpha_composite(layer, skel_layer)
+        except Exception:
+            pass
+
     draw  = ImageDraw.Draw(layer)
 
     r           = max(14, min(w, h) // 30)
@@ -468,12 +644,13 @@ def _build_overlay(w: int, h: int, annotations: list, scores: dict) -> "Image.Im
 
 # ── Still image annotation ─────────────────────────────────────────────────────
 
-def annotate_image(image_bytes: bytes, annotations: list) -> bytes:
+def annotate_image(image_bytes: bytes, annotations: list,
+                   skeleton: dict | None = None) -> bytes:
     from PIL import Image
 
     img   = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
     w, h  = img.size
-    layer = _build_overlay(w, h, annotations, {})
+    layer = _build_overlay(w, h, annotations, {}, skeleton=skeleton)
     result = Image.alpha_composite(img, layer).convert("RGB")
     buf = io.BytesIO()
     result.save(buf, format="JPEG", quality=93)
@@ -831,23 +1008,27 @@ def analyze_media(
             return {"success": False, "error": "Could not parse AI response. Please try again.",
                     "data": None, "annotated_image": None, "key_frames": [], "frames_analyzed": len(image_list)}
 
-        anns = data.get("annotations", [])
+        anns     = data.get("annotations", [])
+        skeleton = data.get("skeleton")          # single skeleton dict (best frame)
+        skel_fn  = int(skeleton.get("frame", 1)) if skeleton else None
 
         annotated_image = None
         try:
-            annotated_image = annotate_image(image_list[0], anns)
+            annotated_image = annotate_image(image_list[0], anns,
+                                             skeleton=skeleton if skel_fn == 1 else None)
         except Exception:
             pass
 
         key_frames = []
         for frame_idx, fb in enumerate(image_list):
-            frame_num = frame_idx + 1
-            # Use annotations for this specific frame; fall back to all if none match
+            frame_num  = frame_idx + 1
             frame_anns = [a for a in anns if a.get("frame", frame_num) == frame_num]
             if not frame_anns:
                 frame_anns = anns
+            # Apply skeleton only on the frame it was observed in
+            frame_skel = skeleton if (skel_fn is not None and skel_fn == frame_num) else None
             try:
-                key_frames.append(annotate_image(fb, frame_anns))
+                key_frames.append(annotate_image(fb, frame_anns, skeleton=frame_skel))
             except Exception:
                 key_frames.append(fb)
 
@@ -935,66 +1116,111 @@ def create_annotated_video_simple(
     video_bytes: bytes,
     annotations: list,
     scores: dict,
+    skeleton: dict | None = None,
     progress_callback=None,
 ) -> bytes | None:
     """
-    Composite a PIL annotation overlay (real circles, arrows, labels, score bars)
-    onto the video using ffmpeg's overlay filter. Much more reliable than a
-    long drawbox filter chain.
-    """
-    import subprocess
-    from PIL import Image
+    Composite annotation overlays onto every video frame using imageio_ffmpeg
+    frame-by-frame so no ffprobe binary is required.
 
-    ffmpeg_bin  = _ffmpeg_exe()
-    ffprobe_bin = shutil.which("ffprobe") or ffmpeg_bin
-    if not ffmpeg_bin:
+    Each key-frame annotation group is shown during its corresponding time window
+    so dots/vectors reflect the positions observed in that segment of the clip.
+    """
+    try:
+        import imageio_ffmpeg
+        from PIL import Image
+    except ImportError:
         return None
 
     vpath    = None
-    opath    = None
     out_path = None
+    writer   = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tv:
             tv.write(video_bytes)
             vpath = tv.name
         out_path = vpath + "_annotated.mp4"
 
-        # Get video dimensions
-        probe = subprocess.run(
-            [ffprobe_bin, "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-of", "json", vpath],
-            capture_output=True, text=True, timeout=10,
-        )
-        info   = json.loads(probe.stdout)
-        stream = info.get("streams", [{}])[0]
-        w      = int(stream.get("width",  640))
-        h      = int(stream.get("height", 360))
+        # ── Read metadata + all frames (no ffprobe needed) ───────────────────
+        gen      = imageio_ffmpeg.read_frames(vpath)
+        meta     = next(gen)
+        w, h     = meta["size"]
+        fps      = float(meta.get("fps") or 25)
+        duration = float(meta.get("duration") or 0.0)
+        # Ensure even dimensions (required by h264)
+        w = w - (w % 2)
+        h = h - (h % 2)
+        frames   = list(gen)
+        gen.close()
 
-        # Build PNG overlay using PIL (real circles, arrows, labels, score bars)
-        overlay_layer = _build_overlay(w, h, annotations, scores)
-        # Convert to RGBA PNG and write to temp file
-        png_buf = io.BytesIO()
-        overlay_layer.save(png_buf, format="PNG")
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as to:
-            to.write(png_buf.getvalue())
-            opath = to.name
+        if not frames:
+            return None
 
-        # Composite: [video][overlay_png] → output, preserving original audio
-        result = subprocess.run(
-            [ffmpeg_bin, "-y",
-             "-i", vpath,
-             "-i", opath,
-             "-filter_complex", "[0:v][1:v]overlay=0:0[vout]",
-             "-map", "[vout]",
-             "-map", "0:a?",          # pass through original audio if present
-             "-c:v", "libx264",
-             "-pix_fmt", "yuv420p",
-             "-crf", "21",
-             "-movflags", "+faststart",
-             out_path],
-            capture_output=True, timeout=180,
+        # ── Pre-build one RGBA overlay PIL image per annotation group ─────────
+        frame_nums = sorted({ann.get("frame", 1) for ann in annotations})
+        num_groups = max(frame_nums) if frame_nums else 1
+
+        skel_fn = int(skeleton.get("frame", 1)) if skeleton else None
+
+        group_overlays: dict = {}
+        for fn in range(1, num_groups + 1):
+            frame_anns = [a for a in annotations if a.get("frame", 1) == fn]
+            if not frame_anns:
+                frame_anns = annotations
+            # Only include skeleton for the frame it was captured in
+            frame_skel = skeleton if (skel_fn is not None and skel_fn == fn) else None
+            group_overlays[fn] = _build_overlay(
+                w, h, frame_anns, scores if fn == num_groups else {},
+                skeleton=frame_skel,
+            )
+
+        # ── Time boundaries: switch annotation group at midpoint between key timestamps ──
+        if num_groups > 1 and duration > 0:
+            key_times  = [duration * (g + 1) / (num_groups + 1) for g in range(num_groups)]
+            boundaries = [0.0]
+            for g in range(len(key_times) - 1):
+                boundaries.append((key_times[g] + key_times[g + 1]) / 2)
+            boundaries.append(duration + 1.0)
+        else:
+            boundaries = None  # single static group
+
+        def _group_for_frame(i: int) -> int:
+            if boundaries is None:
+                return 1
+            t = i / fps
+            for g in range(num_groups):
+                if boundaries[g] <= t < boundaries[g + 1]:
+                    return g + 1
+            return num_groups
+
+        # ── Write annotated frames ────────────────────────────────────────────
+        writer = imageio_ffmpeg.write_frames(
+            out_path, (w, h),
+            pix_fmt_in="rgb24",
+            pix_fmt_out="yuv420p",
+            fps=fps,
+            quality=6,      # maps to ~CRF 20 for libx264 — good quality
+            codec="libx264",
+            macro_block_size=1,
+            output_params=["-movflags", "+faststart"],
         )
-        if result.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+        writer.send(None)   # initialize the generator
+
+        for i, raw in enumerate(frames):
+            fn      = _group_for_frame(i)
+            overlay = group_overlays.get(fn, group_overlays[1])
+            # Crop raw bytes to even w×h in case source has odd edge pixels
+            img = Image.frombytes("RGB", meta["size"], raw)
+            if img.size != (w, h):
+                img = img.crop((0, 0, w, h))
+            img_rgba = img.convert("RGBA")
+            result   = Image.alpha_composite(img_rgba, overlay).convert("RGB")
+            writer.send(result.tobytes())
+
+        writer.close()
+        writer = None
+
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
             with open(out_path, "rb") as f:
                 return f.read()
         return None
@@ -1002,22 +1228,82 @@ def create_annotated_video_simple(
     except Exception:
         return None
     finally:
-        for p in [vpath, opath, out_path]:
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        for p in [vpath, out_path]:
             if p:
-                try: os.unlink(p)
-                except OSError: pass
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
 
-def generate_coaching_audio(data: dict, position: str) -> bytes | None:
+def extract_moment_clip(
+    video_bytes: bytes,
+    frame_num: int,
+    num_key_frames: int,
+    clip_duration: float = 3.5,
+) -> bytes | None:
     """
-    Convert analysis data into a natural coaching narration and return MP3 bytes.
-    Returns None if gTTS is unavailable or narration fails.
+    Extract a short clip from the video around the timestamp of a specific key frame.
+    frame_num: 1-based index matching the key frame numbering in analysis data.
+    num_key_frames: total number of key frames extracted (usually 4).
+    Returns MP4 bytes or None.
     """
     try:
-        from gtts import gTTS
-    except ImportError:
+        import imageio_ffmpeg
+        import subprocess
+
+        ffmpeg_bin = _ffmpeg_exe()
+        if not ffmpeg_bin:
+            return None
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tv:
+            tv.write(video_bytes)
+            vpath = tv.name
+        out_path = vpath + "_clip.mp4"
+
+        try:
+            gen      = imageio_ffmpeg.read_frames(vpath)
+            meta     = next(gen)
+            gen.close()
+            duration = float(meta.get("duration") or 0)
+            if duration <= 0:
+                return None
+
+            # Timestamp matching _extract_frames: ts = duration * frame_num / (num_key_frames + 1)
+            ts    = duration * frame_num / (num_key_frames + 1)
+            start = max(0.0, ts - 1.2)
+
+            result = subprocess.run(
+                [ffmpeg_bin, "-y",
+                 "-ss", f"{start:.3f}", "-i", vpath,
+                 "-t", f"{clip_duration:.3f}",
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                 "-crf", "22", "-movflags", "+faststart", "-an",
+                 out_path],
+                capture_output=True, timeout=60,
+            )
+            if result.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 500:
+                with open(out_path, "rb") as f:
+                    return f.read()
+            return None
+        finally:
+            for p in [vpath, out_path]:
+                if p and os.path.exists(p):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+    except Exception:
         return None
 
+
+def _build_coaching_script(data: dict, position: str) -> str:
+    """Build a punchy, coach-voice narration script from analysis data."""
     pf        = data.get("priority_fix", {})
     best      = data.get("best_moment", {})
     worst     = data.get("worst_moment", {})
@@ -1026,71 +1312,97 @@ def generate_coaching_audio(data: dict, position: str) -> bytes | None:
     ref       = data.get("pro_reference", {})
     summary   = data.get("summary", "")
 
-    lines = []
+    parts = []
 
-    # Opening
-    lines.append(f"Alright, let's go through your session.")
+    # Hook opening
+    parts.append("Alright. Let's talk about what I saw.")
     if summary:
-        lines.append(summary)
+        parts.append(summary)
 
-    # Priority fix
+    # Priority fix — the core of the session
     if pf.get("title"):
-        lines.append(f"Your number one priority right now: {pf['title']}.")
+        parts.append(f"One thing stands out above everything else: {pf['title']}.")
         if pf.get("what"):
-            lines.append(pf["what"])
+            parts.append(pf["what"])
         if pf.get("why"):
-            lines.append(f"Here's why this matters. {pf['why']}")
+            parts.append(f"Why does this matter? {pf['why']}")
         if pf.get("cue"):
-            lines.append(f"The cue I want you to carry into every rep: {pf['cue']}.")
+            parts.append(f"Write this down. Your cue is: {pf['cue']}. Say it every rep.")
 
-    # Best moment
+    # Best moment — give them something to build on
     if best.get("description"):
-        lines.append(f"Your best moment this session — {best['description']} That's the standard. Remember that feeling.")
+        parts.append(
+            f"Now, here's the good news. Your best moment? {best['description']} "
+            "That right there — that's the standard. That's what this can look like when you get it right."
+        )
 
-    # Worst moment
+    # Worst moment — direct, specific, no softening
     if worst.get("what"):
-        lines.append(f"Now here's what cost you. {worst['what']}.")
+        parts.append(f"But here's what cost you. {worst['what']}.")
         if worst.get("cause"):
-            lines.append(f"Why does it happen? {worst['cause']}")
+            parts.append(f"The root cause: {worst['cause']}")
         if worst.get("effect"):
-            lines.append(f"In a game, that means: {worst['effect']}")
+            parts.append(f"And in a real game, that means: {worst['effect']}")
 
-    # Fix cards
+    # Fix cards — crisp and direct
     if fix_cards:
-        lines.append(f"I've got {min(len(fix_cards), 3)} specific fixes for you.")
+        parts.append(f"I've got {min(len(fix_cards), 3)} specific corrections.")
         for i, card in enumerate(fix_cards[:3], 1):
-            mistake    = card.get("mistake", "")
-            correction = card.get("correction", "")
-            cue        = card.get("cue", "")
-            if mistake:
-                lines.append(f"Fix {i}: {mistake}.")
-            if correction:
-                lines.append(correction)
-            if cue:
-                lines.append(f"Cue: {cue}.")
+            if card.get("mistake"):
+                parts.append(f"Number {i}: {card['mistake']}.")
+            if card.get("correction"):
+                parts.append(card["correction"])
+            if card.get("cue"):
+                parts.append(f"Your cue: {card['cue']}.")
 
-    # Strengths
+    # Strengths — brief, genuine
     if strengths:
-        lines.append("Here's what you're doing well.")
+        parts.append("Here's what you're actually doing well.")
         for s in strengths[:2]:
-            lines.append(s)
-        lines.append("Keep doing that.")
+            parts.append(s)
+        parts.append("Don't lose that. Build on it.")
 
     # Pro reference
     if ref.get("player"):
         player = ref["player"]
         team   = ref.get("team", "")
         note   = ref.get("note", "")
-        lines.append(f"Study {player}" + (f" from {team}" if team else "") + ".")
+        ref_line = f"One player I want you to study: {player}"
+        if team:
+            ref_line += f" from {team}"
+        ref_line += "."
+        parts.append(ref_line)
         if note:
-            lines.append(note)
+            parts.append(note)
 
-    # Closing
-    lines.append("Now get to work. See you next session.")
+    parts.append("Now get to work. I'll see you next session.")
+    return "  ".join(parts)
 
-    script = " ".join(lines)
 
+def _tts_edge(script: str) -> bytes | None:
+    """Generate natural-sounding audio using Microsoft edge-tts (neural voice)."""
     try:
+        import asyncio
+        import edge_tts
+
+        async def _speak():
+            communicate = edge_tts.Communicate(script, voice="en-US-GuyNeural")
+            buf = io.BytesIO()
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    buf.write(chunk["data"])
+            buf.seek(0)
+            return buf.read()
+
+        return asyncio.run(_speak())
+    except Exception:
+        return None
+
+
+def _tts_gtts(script: str) -> bytes | None:
+    """Fallback TTS using gTTS."""
+    try:
+        from gtts import gTTS
         tts = gTTS(text=script, lang="en", slow=False)
         buf = io.BytesIO()
         tts.write_to_fp(buf)
@@ -1098,6 +1410,17 @@ def generate_coaching_audio(data: dict, position: str) -> bytes | None:
         return buf.read()
     except Exception:
         return None
+
+
+def generate_coaching_audio(data: dict, position: str) -> bytes | None:
+    """
+    Generate a natural coaching narration as MP3 bytes.
+    Tries edge-tts (Microsoft neural voice) first, falls back to gTTS.
+    """
+    script = _build_coaching_script(data, position)
+    if not script.strip():
+        return None
+    return _tts_edge(script) or _tts_gtts(script)
 
 
 # ── Session Comparison (Before / After) ───────────────────────────────────────
