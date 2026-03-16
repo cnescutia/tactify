@@ -897,14 +897,24 @@ with tab_single:
                 final_video = file_bytes
 
         # ── Summary banner ─────────────────────────────────────────────────────
-        st.markdown(f"""
-        <div style="border-left:3px solid #00FF87;padding:16px 24px;
-                    background:#00FF870a;border-radius:0 10px 10px 0;margin-bottom:16px;">
-            <div style="color:#00FF87;font-size:10px;letter-spacing:3px;
-                        text-transform:uppercase;font-weight:700;margin-bottom:6px;">AI Assessment</div>
-            <div style="color:#ddd;font-size:15px;line-height:1.6;font-style:italic;">"{summary}"</div>
-        </div>
-        """, unsafe_allow_html=True)
+        sum_col, aud_col = st.columns([1.6, 1], gap="large")
+        with sum_col:
+            st.markdown(f"""
+            <div style="border-left:3px solid #00FF87;padding:16px 24px;
+                        background:#00FF870a;border-radius:0 10px 10px 0;margin-bottom:16px;">
+                <div style="color:#00FF87;font-size:10px;letter-spacing:3px;
+                            text-transform:uppercase;font-weight:700;margin-bottom:6px;">AI Assessment</div>
+                <div style="color:#ddd;font-size:15px;line-height:1.6;font-style:italic;">"{summary}"</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with aud_col:
+            if audio_bytes:
+                st.markdown(
+                    '<div style="color:#444;font-size:10px;letter-spacing:3px;'
+                    'text-transform:uppercase;font-weight:700;margin-bottom:8px;">🎙 Coaching Audio</div>',
+                    unsafe_allow_html=True,
+                )
+                st.audio(audio_bytes, format="audio/mp3")
 
         # ── Media + Scores ─────────────────────────────────────────────────────
         col_media, col_scores = st.columns([1.2, 1], gap="large")

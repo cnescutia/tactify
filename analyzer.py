@@ -117,7 +117,11 @@ LANGUAGE STANDARD:
       "label":    "3-5 word technical label (e.g. 'Closed hip — missed lane')",
       "note":     "One precise coaching observation referencing specific body mechanics visible in the frame",
       "region":   "<head|upper_body|left_arm|right_arm|torso|hips|left_leg|right_leg|left_foot|right_foot|feet|body>",
-      "severity": "<strength|warning|error>"
+      "severity": "<strength|warning|error>",
+      "frame":    <integer 1–{num_frames} — which frame BEST shows this issue>,
+      "x_pct":    <float 0.0–1.0 — horizontal position of the annotated body part in that frame; 0=left edge, 1=right edge — look at where the body part ACTUALLY is>,
+      "y_pct":    <float 0.0–1.0 — vertical position; 0=top edge, 1=bottom edge — look at the ACTUAL position>,
+      "vector":   {{"dx": <float -1 to 1>, "dy": <float -1 to 1>}}
     }}
   ],
 
@@ -180,6 +184,8 @@ REQUIREMENTS:
 - Every note/correction must reference something literally visible in the footage
 - Drills must be executable solo unless stated — include distances in meters or yards, rep counts
 - No generic soccer advice. This is used by MLS coaches and players.
+- x_pct / y_pct: You are looking at the actual image. Estimate where the relevant body part ACTUALLY appears on screen. Do NOT use generic center values — look at the real pixel positions. A player standing to the right of frame has x_pct ~0.7; a player's foot near the bottom has y_pct ~0.85. Be precise.
+- vector field: Include ONLY when there is a clear directional correction or movement to show (body rotation, weight shift, pass direction, run path, hip opening). Use dx/dy as a normalized direction unit: positive x = right, negative x = left, positive y = downward, negative y = upward. Magnitude 0.15–0.55. Omit "vector" entirely for static technique issues (e.g. stiff ankle, wrong foot planted). Examples: hip needs to open left → {{"dx": -0.4, "dy": 0.1}}; player should step forward → {{"dx": 0.1, "dy": 0.35}}.
 """
 
 
@@ -343,9 +349,45 @@ def annotate_image(image_bytes: bytes, annotations: list) -> bytes:
         sev    = ann.get("severity", "warning")
         num    = ann.get("number", 1)
         lbl    = ann.get("label", "")[:28]
-        frac   = _REGION_FALLBACK.get(region, (0.5, 0.5))
-        px, py = int(frac[0] * w), int(frac[1] * h)
         rgb    = _SEV_RGB.get(sev, _SEV_RGB["warning"])
+
+        # Use Claude's actual observed position if provided; fall back to region map
+        if ann.get("x_pct") is not None and ann.get("y_pct") is not None:
+            px = int(float(ann["x_pct"]) * w)
+            py = int(float(ann["y_pct"]) * h)
+        else:
+            frac   = _REGION_FALLBACK.get(region, (0.5, 0.5))
+            px, py = int(frac[0] * w), int(frac[1] * h)
+        px = max(r + 2, min(w - r - 2, px))
+        py = max(r + 2, min(h - r - 2, py))
+
+        # Vector arrow (drawn before dot so dot renders on top)
+        vec = ann.get("vector")
+        if vec and isinstance(vec, dict):
+            vdx = float(vec.get("dx", 0))
+            vdy = float(vec.get("dy", 0))
+            mag = math.sqrt(vdx * vdx + vdy * vdy)
+            if mag > 0.05:
+                arrow_len = max(45, min(w, h) // 5)
+                ex = int(px + (vdx / mag) * arrow_len)
+                ey = int(py + (vdy / mag) * arrow_len)
+                ex = max(4, min(w - 4, ex))
+                ey = max(4, min(h - 4, ey))
+                # Arrow shaft (dashed feel via two segments)
+                draw.line([(px, py), (ex, ey)], fill=(*rgb, 210), width=3)
+                # Arrowhead
+                import math as _math
+                adx, ady = ex - px, ey - py
+                dist = _math.sqrt(adx * adx + ady * ady) or 1
+                ux, uy = adx / dist, ady / dist
+                head = max(14, arrow_len // 4)
+                ang = 0.45
+                ca, sa = _math.cos(ang), _math.sin(ang)
+                for hx, hy in [
+                    (ex - head * (ux * ca + uy * sa), ey - head * (-ux * sa + uy * ca)),
+                    (ex - head * (ux * ca - uy * sa), ey - head * (ux * sa + uy * ca)),
+                ]:
+                    draw.line([(ex, ey), (int(hx), int(hy))], fill=(*rgb, 210), width=3)
 
         # Glow rings
         for gr, ga in [(r + 14, 30), (r + 7, 65)]:
@@ -385,10 +427,10 @@ def annotate_image(image_bytes: bytes, annotations: list) -> bytes:
             by2 = by1 + lh + pad * 2
 
             # Clamp to image
-            if bx2 > w - 4: dx = bx2 - (w - 4); bx1 -= dx; bx2 -= dx
-            if bx1 < 4:     dx = 4 - bx1;        bx1 += dx; bx2 += dx
-            if by1 < 4:     by1 = 4;              by2 = by1 + lh + pad * 2
-            if by2 > h - 4: by2 = h - 4;          by1 = by2 - lh - pad * 2
+            if bx2 > w - 4: dx2 = bx2 - (w - 4); bx1 -= dx2; bx2 -= dx2
+            if bx1 < 4:     dx2 = 4 - bx1;        bx1 += dx2; bx2 += dx2
+            if by1 < 4:     by1 = 4;               by2 = by1 + lh + pad * 2
+            if by2 > h - 4: by2 = h - 4;           by1 = by2 - lh - pad * 2
 
             tmp3 = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             ImageDraw.Draw(tmp3).rectangle([bx1, by1, bx2, by2], fill=(8, 8, 8, 210))
@@ -763,9 +805,14 @@ def analyze_media(
             pass
 
         key_frames = []
-        for fb in image_list:
+        for frame_idx, fb in enumerate(image_list):
+            frame_num = frame_idx + 1
+            # Use annotations for this specific frame; fall back to all if none match
+            frame_anns = [a for a in anns if a.get("frame", frame_num) == frame_num]
+            if not frame_anns:
+                frame_anns = anns
             try:
-                key_frames.append(annotate_image(fb, anns))
+                key_frames.append(annotate_image(fb, frame_anns))
             except Exception:
                 key_frames.append(fb)
 
@@ -870,12 +917,58 @@ def create_annotated_video_simple(
 
         for ann in annotations[:6]:
             region = ann.get("region", "upper_body")
-            fx, fy = _REGION_FALLBACK.get(region, (0.5, 0.3))
-            px     = int(fx * w)
-            py     = int(fy * h)
             sev    = ann.get("severity", "warning")
             c      = sev_colors.get(sev, "0xF59E0B")
+
+            # Use Claude's actual observed position if provided; fall back to region map
+            if ann.get("x_pct") is not None and ann.get("y_pct") is not None:
+                px = int(float(ann["x_pct"]) * w)
+                py = int(float(ann["y_pct"]) * h)
+            else:
+                fx, fy = _REGION_FALLBACK.get(region, (0.5, 0.3))
+                px, py = int(fx * w), int(fy * h)
+            px = max(20, min(w - 20, px))
+            py = max(20, min(h - 20, py))
             go_right = px < w // 2
+
+            # Vector arrow (before dot so dot renders on top)
+            vec = ann.get("vector")
+            if vec and isinstance(vec, dict):
+                import math as _math
+                vdx = float(vec.get("dx", 0))
+                vdy = float(vec.get("dy", 0))
+                mag = _math.sqrt(vdx * vdx + vdy * vdy)
+                if mag > 0.05:
+                    arrow_len = max(50, min(w, h) // 5)
+                    ex = int(px + (vdx / mag) * arrow_len)
+                    ey = int(py + (vdy / mag) * arrow_len)
+                    ex = max(4, min(w - 4, ex))
+                    ey = max(4, min(h - 4, ey))
+                    # Shaft: series of small boxes along the line
+                    steps = max(4, arrow_len // 6)
+                    for si in range(steps):
+                        t = si / steps
+                        lx_ = int(px + (ex - px) * t)
+                        ly_ = int(py + (ey - py) * t)
+                        filters.append(f"drawbox=x={lx_-1}:y={ly_-1}:w=3:h=3:color={c}@0.90:t=fill")
+                    # Arrowhead triangle (two small boxes near tip)
+                    adx, ady = ex - px, ey - py
+                    dist = _math.sqrt(adx * adx + ady * ady) or 1
+                    ux, uy = adx / dist, ady / dist
+                    head = max(10, arrow_len // 5)
+                    ang = 0.45
+                    ca, sa = _math.cos(ang), _math.sin(ang)
+                    for hx, hy in [
+                        (ex - head * (ux * ca + uy * sa), ey - head * (-ux * sa + uy * ca)),
+                        (ex - head * (ux * ca - uy * sa), ey - head * (ux * sa + uy * ca)),
+                    ]:
+                        hix, hiy = int(hx), int(hy)
+                        ax_steps = max(3, head // 5)
+                        for si in range(ax_steps + 1):
+                            t = si / ax_steps
+                            fx_ = int(ex + (hix - ex) * t)
+                            fy_ = int(ey + (hiy - ey) * t)
+                            filters.append(f"drawbox=x={fx_-1}:y={fy_-1}:w=3:h=3:color={c}@0.90:t=fill")
 
             # Outer glow (large semi-transparent box → looks like a circle)
             g = 18
