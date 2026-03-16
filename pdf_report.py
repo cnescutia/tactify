@@ -151,7 +151,7 @@ def generate_pdf_report(
     _text(pdf, DIM)
     meta_right = age_group.upper()
     if club_name:
-        meta_right += f"  ·  {club_name.upper()}"
+        meta_right += f"  -  {club_name.upper()}"
     pdf.cell(86, 4, meta_right, align="R", ln=True)
 
     y = 24
@@ -293,7 +293,7 @@ def generate_pdf_report(
         pdf.set_xy(14, y)
         pdf.set_font("Helvetica", "B", 7)
         _text(pdf, DIM)
-        pdf.cell(0, 4, f"COACHING ANNOTATIONS  ·  {len(annotations[:5])} FOCUS AREAS", ln=True)
+        pdf.cell(0, 4, f"COACHING ANNOTATIONS  -  {len(annotations[:5])} FOCUS AREAS", ln=True)
         y += 6
 
         SEV_C = {"strength": ACCENT, "warning": WARN, "error": ERR}
@@ -322,10 +322,10 @@ def generate_pdf_report(
     pdf.set_xy(14, H - 5.5)
     pdf.set_font("Helvetica", "B", 7)
     _text(pdf, BLACK)
-    pdf.cell(100, 5, "TACTIFY · AI SOCCER COACHING", ln=False)
+    pdf.cell(100, 5, "TACTIFY - AI SOCCER COACHING", ln=False)
     pdf.set_xy(110, H - 5.5)
     pdf.set_font("Helvetica", "", 7)
-    pdf.cell(86, 5, "Powered by Claude AI  ·  tactify.ai", align="R", ln=False)
+    pdf.cell(86, 5, "Powered by Claude AI  -  tactify.ai", align="R", ln=False)
 
     # ══════════════════════════════════════════════════════════════════════════
     # PAGE 2 — Drill Cards + Strengths + Pro Reference
@@ -343,7 +343,7 @@ def generate_pdf_report(
     pdf.set_xy(14, y + 9)
     pdf.set_font("Helvetica", "", 8)
     _text(pdf, DIM)
-    pdf.cell(100, 4, "Drills · Corrections · Professional Reference", ln=False)
+    pdf.cell(100, 4, "Drills - Corrections - Professional Reference", ln=False)
     pdf.set_xy(130, y + 2)
     pdf.set_font("Helvetica", "B", 10)
     _text(pdf, ACCENT)
@@ -394,7 +394,7 @@ def generate_pdf_report(
             pdf.set_xy(18, y + 38)
             pdf.set_font("Helvetica", "B", 7)
             _text(pdf, ACCENT)
-            pdf.cell(30, 4, "✓ IT'S WORKING WHEN: ", ln=False)
+            pdf.cell(30, 4, "+ IT'S WORKING WHEN: ", ln=False)
             pdf.set_font("Helvetica", "", 7)
             _text(pdf, GRAY)
             pdf.cell(W - 66, 4, _s(drill_p["know_its_working"])[:90], ln=False)
@@ -406,7 +406,7 @@ def generate_pdf_report(
         pdf.set_xy(14, y)
         pdf.set_font("Helvetica", "B", 7)
         _text(pdf, DIM)
-        pdf.cell(0, 4, f"FIX CARDS  ·  {len(fix_cards)} COACHING CORRECTIONS", ln=True)
+        pdf.cell(0, 4, f"FIX CARDS  -  {len(fix_cards)} COACHING CORRECTIONS", ln=True)
         y += 6
 
         card_w  = (W - 28 - (len(fix_cards) - 1) * 5) // len(fix_cards)
@@ -466,7 +466,7 @@ def generate_pdf_report(
                 _text(pdf, DIM)
                 ds = f"DRILL: {_s(dr['name'])}"
                 if dr.get("duration"):
-                    ds += f"  ·  {_s(dr['duration'])}"
+                    ds += f"  -  {_s(dr['duration'])}"
                 pdf.cell(card_w - 6, 4, ds[:40], ln=False)
 
         y += card_h + 8
@@ -535,9 +535,9 @@ def generate_pdf_report(
     pdf.set_xy(14, H - 5.5)
     pdf.set_font("Helvetica", "B", 7)
     _text(pdf, BLACK)
-    pdf.cell(100, 5, "TACTIFY · AI SOCCER COACHING", ln=False)
+    pdf.cell(100, 5, "TACTIFY - AI SOCCER COACHING", ln=False)
     pdf.set_xy(110, H - 5.5)
     pdf.set_font("Helvetica", "", 7)
-    pdf.cell(86, 5, "Powered by Claude AI  ·  tactify.ai", align="R", ln=False)
+    pdf.cell(86, 5, "Powered by Claude AI  -  tactify.ai", align="R", ln=False)
 
     return bytes(pdf.output())

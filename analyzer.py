@@ -75,7 +75,7 @@ _SEV_RGB = {
 
 # ── Claude prompt ─────────────────────────────────────────────────────────────
 
-ANALYSIS_PROMPT = """You are a senior technical coach at an MLS club, with experience at top European academies.
+ANALYSIS_PROMPT = """You are a senior technical coach at a professional soccer club, with experience at top European and South American academies.
 You see exactly what you see in the footage — no assumptions, no generic observations.
 Every piece of feedback must be directly tied to something visible in these specific frames.
 
@@ -98,7 +98,7 @@ LANGUAGE STANDARD:
 - Be specific about which foot, which shoulder, which direction
 - Name specific game situations: "counter-press", "third-man run", "switch of play", "overlapping run"
 - Never write advice that could apply to any random player — tie it to what you literally see
-- Scores: 10 = MLS starter level, 7 = high-level youth, 5 = recreational adult, 3 = significant technical gaps
+- Scores: 10 = professional starter level, 7 = high-level youth, 5 = recreational adult, 3 = significant technical gaps
 
 {{
   "summary": "One sharp, specific sentence that could open a real scouting report on this player",
@@ -128,7 +128,7 @@ LANGUAGE STANDARD:
   "priority_fix": {{
     "title":      "The single most important technical fix (5-8 words)",
     "what":       "Exact description of the technical error visible in the footage — specific body part, specific action",
-    "why":        "The direct game consequence of this error in a real MLS-level match",
+    "why":        "The direct game consequence of this error in a real professional match",
     "cue":        "One coaching cue the player repeats in their head — crisp, memorable, under 8 words",
     "drill": {{
       "name":          "Specific drill name",
@@ -213,7 +213,7 @@ REQUIREMENTS:
 - 2–3 fix cards, each a distinct technical issue
 - Every note/correction must reference something literally visible in the footage
 - Drills must be executable solo unless stated — include distances in meters or yards, rep counts
-- No generic soccer advice. This is used by MLS coaches and players.
+- No generic soccer advice. This is used by professional coaches and players worldwide.
 - x_pct / y_pct: You are looking at the actual image. Estimate where the relevant body part ACTUALLY appears on screen. Do NOT use generic center values — look at the real pixel positions. A player standing to the right of frame has x_pct ~0.7; a player's foot near the bottom has y_pct ~0.85. Be precise.
 - vector field: Include ONLY when there is a clear directional correction or movement to show (body rotation, weight shift, pass direction, run path, hip opening). Use dx/dy as a normalized direction unit: positive x = right, negative x = left, positive y = downward, negative y = upward. Magnitude 0.15–0.55. Omit "vector" entirely for static technique issues (e.g. stiff ankle, wrong foot planted). Examples: hip needs to open left → {{"dx": -0.4, "dy": 0.1}}; player should step forward → {{"dx": 0.1, "dy": 0.35}}.
 - skeleton: Pick the ONE frame that shows the clearest full-body pose. Map every visible joint to its ACTUAL pixel position as x/y fractions. If a joint is hidden or out of frame set both to -1. Include 2–4 key_angles at the joints most relevant to the coaching feedback (e.g. knee flexion on contact, hip angle on pass). assessment=good means the angle is optimal for the action; warning means improvable; error means a technical flaw.
@@ -241,109 +241,55 @@ def _parse_json(text: str) -> dict | None:
 
 
 def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
-    """Extract evenly-spaced frames from video bytes using ffmpeg."""
-    import subprocess
-
-    ffmpeg_bin = _ffmpeg_exe()
-    ffprobe_bin = shutil.which("ffprobe") or ffmpeg_bin
-    if not ffmpeg_bin:
-        return []
-
-    suffix = ".mp4"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(video_bytes)
-        path = tmp.name
-
+    """
+    Extract evenly-spaced frames using imageio_ffmpeg (no ffprobe needed).
+    Decodes at 1 fps to keep memory low, then picks evenly-spaced samples.
+    """
     try:
-        if not ffmpeg_bin:
-            return []
+        import imageio_ffmpeg
+        from PIL import Image
 
-        # ── Strategy 1: ffprobe duration → seek to timestamps ───────────────
-        duration = 0.0
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp.write(video_bytes)
+            path = tmp.name
+
         try:
-            probe = subprocess.run(
-                [ffprobe_bin or ffmpeg_bin, "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", path],
-                capture_output=True, text=True, timeout=15,
+            gen = imageio_ffmpeg.read_frames(
+                path,
+                output_params=["-vf", "fps=1"],  # decode 1 frame/sec — memory efficient
             )
-            raw = probe.stdout.strip()
-            duration = float(raw) if raw and raw.lower() not in ("n/a", "") else 0.0
-        except Exception:
-            duration = 0.0
+            meta         = next(gen)
+            w, h         = meta["size"]
+            sample_frames = []
+            for frame in gen:
+                sample_frames.append(frame)
+                if len(sample_frames) >= 300:   # hard cap at 5 min of video
+                    break
+            gen.close()
 
-        if duration > 0:
-            frames = []
-            for i in range(num_frames):
-                ts = duration * (i + 1) / (num_frames + 1)
-                r = subprocess.run(
-                    [ffmpeg_bin, "-ss", str(ts), "-i", path,
-                     "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
-                    capture_output=True, timeout=20,
-                )
-                if r.returncode == 0 and r.stdout:
-                    frames.append(r.stdout)
-            if frames:
-                return frames
+            if not sample_frames:
+                return []
 
-        # ── Strategy 2: extract by frame number (no duration needed) ────────
-        # Count total frames first
-        count_r = subprocess.run(
-            [ffprobe_bin or ffmpeg_bin, "-v", "error", "-select_streams", "v:0",
-             "-count_packets", "-show_entries", "stream=nb_read_packets",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, timeout=15,
-        )
-        try:
-            total = int(count_r.stdout.strip())
-        except Exception:
-            total = 0
+            n       = len(sample_frames)
+            indices = [int(n * (i + 1) / (num_frames + 1)) for i in range(num_frames)]
 
-        if total > 0:
-            frames = []
-            for i in range(num_frames):
-                fn = int(total * (i + 1) / (num_frames + 1))
-                r = subprocess.run(
-                    [ffmpeg_bin, "-i", path,
-                     "-vf", f"select=eq(n\\,{fn})", "-vsync", "0",
-                     "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
-                    capture_output=True, timeout=30,
-                )
-                if r.returncode == 0 and r.stdout:
-                    frames.append(r.stdout)
-            if frames:
-                return frames
+            result = []
+            for idx in indices:
+                idx = min(max(0, idx), n - 1)
+                img = Image.frombytes("RGB", (w, h), sample_frames[idx])
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=90)
+                result.append(buf.getvalue())
+            return result
 
-        # ── Strategy 3: blind seek at fixed intervals (last resort) ─────────
-        frames = []
-        for ts in [1.0, 3.0, 6.0, 10.0][:num_frames]:
-            r = subprocess.run(
-                [ffmpeg_bin, "-ss", str(ts), "-i", path,
-                 "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
-                capture_output=True, timeout=20,
-            )
-            if r.returncode == 0 and r.stdout:
-                frames.append(r.stdout)
-        if frames:
-            return frames
-
-        # ── Strategy 4: first frame only ────────────────────────────────────
-        r = subprocess.run(
-            [ffmpeg_bin, "-i", path,
-             "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
-            capture_output=True, timeout=20,
-        )
-        if r.returncode == 0 and r.stdout:
-            return [r.stdout]
-
-        return []
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     except Exception:
         return []
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
 
 
 
