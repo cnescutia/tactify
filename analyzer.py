@@ -15,8 +15,22 @@ import re
 import tempfile
 from typing import Callable
 
+import shutil
+
 import anthropic
 from knowledge_base import get_relevant_knowledge
+
+
+def _ffmpeg_exe() -> str | None:
+    """Return path to ffmpeg binary: system install first, then imageio-ffmpeg bundle."""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
 
 # ── MediaPipe landmark index map ───────────────────────────────────────────────
 # Indices are stable across MediaPipe versions (no import needed at module level)
@@ -191,7 +205,12 @@ def _parse_json(text: str) -> dict | None:
 
 def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
     """Extract evenly-spaced frames from video bytes using ffmpeg."""
-    import subprocess, shutil
+    import subprocess
+
+    ffmpeg_bin = _ffmpeg_exe()
+    ffprobe_bin = shutil.which("ffprobe") or ffmpeg_bin
+    if not ffmpeg_bin:
+        return []
 
     suffix = ".mp4"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -199,14 +218,14 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
         path = tmp.name
 
     try:
-        if not shutil.which("ffmpeg"):
+        if not ffmpeg_bin:
             return []
 
         # ── Strategy 1: ffprobe duration → seek to timestamps ───────────────
         duration = 0.0
         try:
             probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                [ffprobe_bin or ffmpeg_bin, "-v", "error", "-show_entries", "format=duration",
                  "-of", "default=noprint_wrappers=1:nokey=1", path],
                 capture_output=True, text=True, timeout=15,
             )
@@ -220,7 +239,7 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
             for i in range(num_frames):
                 ts = duration * (i + 1) / (num_frames + 1)
                 r = subprocess.run(
-                    ["ffmpeg", "-ss", str(ts), "-i", path,
+                    [ffmpeg_bin, "-ss", str(ts), "-i", path,
                      "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
                     capture_output=True, timeout=20,
                 )
@@ -232,7 +251,7 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
         # ── Strategy 2: extract by frame number (no duration needed) ────────
         # Count total frames first
         count_r = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+            [ffprobe_bin or ffmpeg_bin, "-v", "error", "-select_streams", "v:0",
              "-count_packets", "-show_entries", "stream=nb_read_packets",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
             capture_output=True, text=True, timeout=15,
@@ -247,7 +266,7 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
             for i in range(num_frames):
                 fn = int(total * (i + 1) / (num_frames + 1))
                 r = subprocess.run(
-                    ["ffmpeg", "-i", path,
+                    [ffmpeg_bin, "-i", path,
                      "-vf", f"select=eq(n\\,{fn})", "-vsync", "0",
                      "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
                     capture_output=True, timeout=30,
@@ -261,7 +280,7 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
         frames = []
         for ts in [1.0, 3.0, 6.0, 10.0][:num_frames]:
             r = subprocess.run(
-                ["ffmpeg", "-ss", str(ts), "-i", path,
+                [ffmpeg_bin, "-ss", str(ts), "-i", path,
                  "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
                 capture_output=True, timeout=20,
             )
@@ -272,7 +291,7 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
 
         # ── Strategy 4: first frame only ────────────────────────────────────
         r = subprocess.run(
-            ["ffmpeg", "-i", path,
+            [ffmpeg_bin, "-i", path,
              "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
             capture_output=True, timeout=20,
         )
@@ -771,8 +790,9 @@ def merge_audio_into_video(video_bytes: bytes, audio_bytes: bytes) -> bytes | No
     The video loops continuously so the full audio narration plays without cutoff.
     Returns merged MP4 bytes, or None if ffmpeg is unavailable.
     """
-    import shutil, subprocess
-    if not shutil.which("ffmpeg"):
+    import subprocess
+    ffmpeg_bin = _ffmpeg_exe()
+    if not ffmpeg_bin:
         return None
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tv:
@@ -785,7 +805,7 @@ def merge_audio_into_video(video_bytes: bytes, audio_bytes: bytes) -> bytes | No
 
     try:
         subprocess.run(
-            ["ffmpeg", "-y",
+            [ffmpeg_bin, "-y",
              "-stream_loop", "-1",   # loop video input so it never runs out
              "-i", vpath,
              "-i", apath,
@@ -819,8 +839,10 @@ def create_annotated_video_simple(
     Burn annotation dots + connecting lines + score bars into video using
     ffmpeg drawbox filters ONLY (no drawtext — avoids fontconfig dependency).
     """
-    import shutil, subprocess
-    if not shutil.which("ffmpeg"):
+    import subprocess
+    ffmpeg_bin = _ffmpeg_exe()
+    ffprobe_bin = shutil.which("ffprobe") or ffmpeg_bin
+    if not ffmpeg_bin:
         return None
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tv:
@@ -830,7 +852,7 @@ def create_annotated_video_simple(
 
     try:
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+            [ffprobe_bin, "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height", "-of", "json", vpath],
             capture_output=True, text=True, timeout=10,
         )
@@ -925,7 +947,7 @@ def create_annotated_video_simple(
         vf = ",".join(filters)
 
         result = subprocess.run(
-            ["ffmpeg", "-y", "-i", vpath,
+            [ffmpeg_bin, "-y", "-i", vpath,
              "-vf", vf,
              "-c:v", "libx264",
              "-pix_fmt", "yuv420p",
