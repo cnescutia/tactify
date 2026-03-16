@@ -317,32 +317,38 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
 
 
 
-# ── Still image annotation (Pillow) ───────────────────────────────────────────
+# ── Shared annotation rendering (PIL) ─────────────────────────────────────────
 
-def annotate_image(image_bytes: bytes, annotations: list) -> bytes:
-    from PIL import Image, ImageDraw, ImageFont
-
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-    w, h = img.size
-    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    draw  = ImageDraw.Draw(layer)
-    r     = max(18, min(w, h) // 28)
-    fsize_num   = max(13, r - 5)
-    fsize_label = max(11, r - 8)
-
-    font_num = font_lbl = None
-    for path in ["/System/Library/Fonts/Helvetica.ttc",
-                 "/System/Library/Fonts/Arial.ttf",
-                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                 "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"]:
+def _load_fonts(fsize_num: int, fsize_label: int):
+    from PIL import ImageFont
+    for path in [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]:
         try:
-            font_num = ImageFont.truetype(path, fsize_num)
-            font_lbl = ImageFont.truetype(path, fsize_label)
-            break
+            return ImageFont.truetype(path, fsize_num), ImageFont.truetype(path, fsize_label)
         except Exception:
             continue
-    if font_num is None:
-        font_num = font_lbl = ImageFont.load_default()
+    d = ImageFont.load_default()
+    return d, d
+
+
+def _build_overlay(w: int, h: int, annotations: list, scores: dict) -> "Image.Image":
+    """
+    Render colored dots, directional arrows, callout labels, and score bars
+    onto a transparent RGBA canvas. Used by both still-image and video annotation.
+    """
+    from PIL import Image, ImageDraw
+
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw  = ImageDraw.Draw(layer)
+
+    r           = max(14, min(w, h) // 30)
+    fsize_num   = max(12, r - 4)
+    fsize_label = max(10, r - 6)
+    font_num, font_lbl = _load_fonts(fsize_num, fsize_label)
 
     for ann in annotations[:6]:
         region = ann.get("region", "body").lower()
@@ -351,94 +357,123 @@ def annotate_image(image_bytes: bytes, annotations: list) -> bytes:
         lbl    = ann.get("label", "")[:28]
         rgb    = _SEV_RGB.get(sev, _SEV_RGB["warning"])
 
-        # Use Claude's actual observed position if provided; fall back to region map
+        # Position: use Claude's observed coordinates when present
         if ann.get("x_pct") is not None and ann.get("y_pct") is not None:
             px = int(float(ann["x_pct"]) * w)
             py = int(float(ann["y_pct"]) * h)
         else:
-            frac   = _REGION_FALLBACK.get(region, (0.5, 0.5))
-            px, py = int(frac[0] * w), int(frac[1] * h)
-        px = max(r + 2, min(w - r - 2, px))
-        py = max(r + 2, min(h - r - 2, py))
+            fx, fy = _REGION_FALLBACK.get(region, (0.5, 0.5))
+            px, py = int(fx * w), int(fy * h)
+        px = max(r + 4, min(w - r - 4, px))
+        py = max(r + 4, min(h - r - 4, py))
 
-        # Vector arrow (drawn before dot so dot renders on top)
+        # ── Vector arrow ──────────────────────────────────────────────────────
         vec = ann.get("vector")
         if vec and isinstance(vec, dict):
             vdx = float(vec.get("dx", 0))
             vdy = float(vec.get("dy", 0))
             mag = math.sqrt(vdx * vdx + vdy * vdy)
             if mag > 0.05:
-                arrow_len = max(45, min(w, h) // 5)
-                ex = int(px + (vdx / mag) * arrow_len)
-                ey = int(py + (vdy / mag) * arrow_len)
-                ex = max(4, min(w - 4, ex))
-                ey = max(4, min(h - 4, ey))
-                # Arrow shaft (dashed feel via two segments)
-                draw.line([(px, py), (ex, ey)], fill=(*rgb, 210), width=3)
+                arrow_len = max(50, min(w, h) // 5)
+                ex = max(4, min(w - 4, int(px + (vdx / mag) * arrow_len)))
+                ey = max(4, min(h - 4, int(py + (vdy / mag) * arrow_len)))
+                # Thick shaft
+                draw.line([(px, py), (ex, ey)], fill=(*rgb, 220), width=4)
                 # Arrowhead
-                import math as _math
                 adx, ady = ex - px, ey - py
-                dist = _math.sqrt(adx * adx + ady * ady) or 1
-                ux, uy = adx / dist, ady / dist
-                head = max(14, arrow_len // 4)
-                ang = 0.45
-                ca, sa = _math.cos(ang), _math.sin(ang)
+                dist = math.sqrt(adx * adx + ady * ady) or 1
+                ux, uy  = adx / dist, ady / dist
+                head    = max(14, arrow_len // 4)
+                ca, sa  = math.cos(0.45), math.sin(0.45)
                 for hx, hy in [
                     (ex - head * (ux * ca + uy * sa), ey - head * (-ux * sa + uy * ca)),
-                    (ex - head * (ux * ca - uy * sa), ey - head * (ux * sa + uy * ca)),
+                    (ex - head * (ux * ca - uy * sa), ey - head * (ux * sa  + uy * ca)),
                 ]:
-                    draw.line([(ex, ey), (int(hx), int(hy))], fill=(*rgb, 210), width=3)
+                    draw.line([(ex, ey), (int(hx), int(hy))], fill=(*rgb, 220), width=4)
 
-        # Glow rings
+        # ── Glow rings ────────────────────────────────────────────────────────
         for gr, ga in [(r + 14, 30), (r + 7, 65)]:
             tmp = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             ImageDraw.Draw(tmp).ellipse([px-gr, py-gr, px+gr, py+gr], fill=(*rgb, ga))
             layer = Image.alpha_composite(layer, tmp)
             draw  = ImageDraw.Draw(layer)
 
-        # Main dot
-        draw.ellipse([px-r, py-r, px+r, py+r], fill=(*rgb, 230), outline=(255, 255, 255, 220), width=2)
-        draw.text((px, py), str(num), fill=(255, 255, 255, 255), font=font_num, anchor="mm")
+        # ── Main dot ──────────────────────────────────────────────────────────
+        draw.ellipse([px-r, py-r, px+r, py+r],
+                     fill=(*rgb, 235), outline=(255, 255, 255, 220), width=2)
+        draw.text((px, py), str(num),
+                  fill=(255, 255, 255, 255), font=font_num, anchor="mm")
 
-        # Callout label
+        # ── Callout label ─────────────────────────────────────────────────────
         if lbl:
-            # Decide which side to place label
             go_right = px < w * 0.55
-            line_len  = max(55, w // 9)
-            tip_x = px + (r + line_len if go_right else -(r + line_len))
-            tip_y = py - r // 2
-
-            # Connector line
+            line_len = max(55, w // 9)
+            tip_x    = px + (r + line_len if go_right else -(r + line_len))
+            tip_y    = py - r // 2
             draw.line([(px + (r if go_right else -r), py), (tip_x, tip_y)],
                       fill=(*rgb, 170), width=2)
-
-            # Label box
             pad = 6
             try:
                 bbox = draw.textbbox((0, 0), lbl, font=font_lbl)
                 lw, lh = bbox[2] - bbox[0], bbox[3] - bbox[1]
             except AttributeError:
-                lw, lh = len(lbl) * fsize_label * 0.6, fsize_label + 4
-                lw, lh = int(lw), int(lh)
-
+                lw, lh = int(len(lbl) * fsize_label * 0.6), fsize_label + 4
             bx1 = tip_x if go_right else tip_x - lw - pad * 2
             by1 = tip_y - lh // 2 - pad
-            bx2 = bx1 + lw + pad * 2
-            by2 = by1 + lh + pad * 2
-
-            # Clamp to image
-            if bx2 > w - 4: dx2 = bx2 - (w - 4); bx1 -= dx2; bx2 -= dx2
-            if bx1 < 4:     dx2 = 4 - bx1;        bx1 += dx2; bx2 += dx2
-            if by1 < 4:     by1 = 4;               by2 = by1 + lh + pad * 2
-            if by2 > h - 4: by2 = h - 4;           by1 = by2 - lh - pad * 2
-
+            bx2, by2 = bx1 + lw + pad * 2, by1 + lh + pad * 2
+            # Clamp
+            if bx2 > w - 4: d = bx2 - (w-4); bx1 -= d; bx2 -= d
+            if bx1 < 4:     d = 4 - bx1;     bx1 += d; bx2 += d
+            if by1 < 4:     by1 = 4;          by2 = by1 + lh + pad*2
+            if by2 > h - 4: by2 = h-4;        by1 = by2 - lh - pad*2
             tmp3 = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-            ImageDraw.Draw(tmp3).rectangle([bx1, by1, bx2, by2], fill=(8, 8, 8, 210))
+            ImageDraw.Draw(tmp3).rectangle([bx1, by1, bx2, by2], fill=(8, 8, 8, 215))
             layer = Image.alpha_composite(layer, tmp3)
             draw  = ImageDraw.Draw(layer)
             draw.rectangle([bx1, by1, bx2, by2], outline=(*rgb, 200), width=1)
             draw.text((bx1 + pad, by1 + pad), lbl, fill=(*rgb, 230), font=font_lbl)
 
+    # ── Score bar panel (bottom-right) ────────────────────────────────────────
+    if scores:
+        score_items = [
+            scores.get("technique",         5),
+            scores.get("body_position",     5),
+            scores.get("spatial_awareness", 5),
+            scores.get("decision_making",   5),
+            scores.get("effort",            5),
+        ]
+        bar_w   = max(72, w // 9)
+        bar_h   = max(5, h // 72)
+        row_h   = bar_h + 8
+        panel_h = len(score_items) * row_h + 12
+        px0     = w - bar_w - 14
+        py0     = h - panel_h - 10
+        tmp4 = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        ImageDraw.Draw(tmp4).rectangle(
+            [px0 - 8, py0 - 6, w - 6, h - 6], fill=(5, 5, 5, 210)
+        )
+        layer = Image.alpha_composite(layer, tmp4)
+        draw  = ImageDraw.Draw(layer)
+        # Green brand bar at top of panel
+        draw.rectangle([px0 - 8, py0 - 6, w - 6, py0 - 3], fill=(0, 255, 135, 210))
+        for i, val in enumerate(score_items):
+            y  = py0 + i * row_h + 2
+            bc = (16, 185, 129) if val >= 8 else (245, 158, 11) if val >= 6 else (239, 68, 68)
+            draw.rectangle([px0, y, px0 + bar_w, y + bar_h], fill=(26, 26, 26, 180))
+            fill_w = max(2, int(bar_w * val / 10))
+            draw.rectangle([px0, y, px0 + fill_w, y + bar_h], fill=(*bc, 220))
+
+    return layer
+
+
+# ── Still image annotation ─────────────────────────────────────────────────────
+
+def annotate_image(image_bytes: bytes, annotations: list) -> bytes:
+    from PIL import Image
+
+    img   = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    w, h  = img.size
+    layer = _build_overlay(w, h, annotations, {})
     result = Image.alpha_composite(img, layer).convert("RGB")
     buf = io.BytesIO()
     result.save(buf, format="JPEG", quality=93)
@@ -851,20 +886,40 @@ def merge_audio_into_video(video_bytes: bytes, audio_bytes: bytes) -> bytes | No
     out_path = vpath + "_merged.mp4"
 
     try:
-        subprocess.run(
+        r = subprocess.run(
             [ffmpeg_bin, "-y",
-             "-stream_loop", "-1",   # loop video input so it never runs out
+             "-stream_loop", "-1",   # loop video so coaching audio never outrun it
              "-i", vpath,
              "-i", apath,
-             "-c:v", "libx264",
+             "-map", "0:v:0",        # video stream from looped input
+             "-map", "1:a:0",        # audio from coaching MP3 only (drop original audio)
+             "-c:v", "copy",         # copy video stream as-is (fast, no re-encode)
              "-c:a", "aac",
              "-b:a", "128k",
-             "-shortest",            # stop when audio ends
+             "-shortest",            # stop when audio (coaching narration) ends
              "-movflags", "+faststart",
              out_path],
-            capture_output=True, timeout=60,
+            capture_output=True, timeout=120,
         )
-        if os.path.exists(out_path):
+        if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+            with open(out_path, "rb") as f:
+                return f.read()
+        # Fallback: re-encode video if stream copy failed (e.g. HEVC input)
+        r2 = subprocess.run(
+            [ffmpeg_bin, "-y",
+             "-stream_loop", "-1",
+             "-i", vpath,
+             "-i", apath,
+             "-map", "0:v:0",
+             "-map", "1:a:0",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23",
+             "-c:a", "aac", "-b:a", "128k",
+             "-shortest",
+             "-movflags", "+faststart",
+             out_path],
+            capture_output=True, timeout=120,
+        )
+        if r2.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
             with open(out_path, "rb") as f:
                 return f.read()
         return None
@@ -883,21 +938,28 @@ def create_annotated_video_simple(
     progress_callback=None,
 ) -> bytes | None:
     """
-    Burn annotation dots + connecting lines + score bars into video using
-    ffmpeg drawbox filters ONLY (no drawtext — avoids fontconfig dependency).
+    Composite a PIL annotation overlay (real circles, arrows, labels, score bars)
+    onto the video using ffmpeg's overlay filter. Much more reliable than a
+    long drawbox filter chain.
     """
     import subprocess
-    ffmpeg_bin = _ffmpeg_exe()
+    from PIL import Image
+
+    ffmpeg_bin  = _ffmpeg_exe()
     ffprobe_bin = shutil.which("ffprobe") or ffmpeg_bin
     if not ffmpeg_bin:
         return None
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tv:
-        tv.write(video_bytes)
-        vpath = tv.name
-    out_path = vpath + "_annotated.mp4"
-
+    vpath    = None
+    opath    = None
+    out_path = None
     try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tv:
+            tv.write(video_bytes)
+            vpath = tv.name
+        out_path = vpath + "_annotated.mp4"
+
+        # Get video dimensions
         probe = subprocess.run(
             [ffprobe_bin, "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height", "-of", "json", vpath],
@@ -908,140 +970,23 @@ def create_annotated_video_simple(
         w      = int(stream.get("width",  640))
         h      = int(stream.get("height", 360))
 
-        sev_colors = {
-            "strength": "0x10B981",
-            "warning":  "0xF59E0B",
-            "error":    "0xEF4444",
-        }
-        filters = []
+        # Build PNG overlay using PIL (real circles, arrows, labels, score bars)
+        overlay_layer = _build_overlay(w, h, annotations, scores)
+        # Convert to RGBA PNG and write to temp file
+        png_buf = io.BytesIO()
+        overlay_layer.save(png_buf, format="PNG")
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as to:
+            to.write(png_buf.getvalue())
+            opath = to.name
 
-        for ann in annotations[:6]:
-            region = ann.get("region", "upper_body")
-            sev    = ann.get("severity", "warning")
-            c      = sev_colors.get(sev, "0xF59E0B")
-
-            # Use Claude's actual observed position if provided; fall back to region map
-            if ann.get("x_pct") is not None and ann.get("y_pct") is not None:
-                px = int(float(ann["x_pct"]) * w)
-                py = int(float(ann["y_pct"]) * h)
-            else:
-                fx, fy = _REGION_FALLBACK.get(region, (0.5, 0.3))
-                px, py = int(fx * w), int(fy * h)
-            px = max(20, min(w - 20, px))
-            py = max(20, min(h - 20, py))
-            go_right = px < w // 2
-
-            # Vector arrow (before dot so dot renders on top)
-            vec = ann.get("vector")
-            if vec and isinstance(vec, dict):
-                import math as _math
-                vdx = float(vec.get("dx", 0))
-                vdy = float(vec.get("dy", 0))
-                mag = _math.sqrt(vdx * vdx + vdy * vdy)
-                if mag > 0.05:
-                    arrow_len = max(50, min(w, h) // 5)
-                    ex = int(px + (vdx / mag) * arrow_len)
-                    ey = int(py + (vdy / mag) * arrow_len)
-                    ex = max(4, min(w - 4, ex))
-                    ey = max(4, min(h - 4, ey))
-                    # Shaft: series of small boxes along the line
-                    steps = max(4, arrow_len // 6)
-                    for si in range(steps):
-                        t = si / steps
-                        lx_ = int(px + (ex - px) * t)
-                        ly_ = int(py + (ey - py) * t)
-                        filters.append(f"drawbox=x={lx_-1}:y={ly_-1}:w=3:h=3:color={c}@0.90:t=fill")
-                    # Arrowhead triangle (two small boxes near tip)
-                    adx, ady = ex - px, ey - py
-                    dist = _math.sqrt(adx * adx + ady * ady) or 1
-                    ux, uy = adx / dist, ady / dist
-                    head = max(10, arrow_len // 5)
-                    ang = 0.45
-                    ca, sa = _math.cos(ang), _math.sin(ang)
-                    for hx, hy in [
-                        (ex - head * (ux * ca + uy * sa), ey - head * (-ux * sa + uy * ca)),
-                        (ex - head * (ux * ca - uy * sa), ey - head * (ux * sa + uy * ca)),
-                    ]:
-                        hix, hiy = int(hx), int(hy)
-                        ax_steps = max(3, head // 5)
-                        for si in range(ax_steps + 1):
-                            t = si / ax_steps
-                            fx_ = int(ex + (hix - ex) * t)
-                            fy_ = int(ey + (hiy - ey) * t)
-                            filters.append(f"drawbox=x={fx_-1}:y={fy_-1}:w=3:h=3:color={c}@0.90:t=fill")
-
-            # Outer glow (large semi-transparent box → looks like a circle)
-            g = 18
-            filters.append(f"drawbox=x={px-g}:y={py-g}:w={g*2}:h={g*2}:color={c}@0.20:t=fill")
-            g = 12
-            filters.append(f"drawbox=x={px-g}:y={py-g}:w={g*2}:h={g*2}:color={c}@0.40:t=fill")
-            # Solid dot core
-            g = 7
-            filters.append(f"drawbox=x={px-g}:y={py-g}:w={g*2}:h={g*2}:color={c}@0.95:t=fill")
-            # White border (1px outline via t=border)
-            filters.append(f"drawbox=x={px-g-1}:y={py-g-1}:w={g*2+2}:h={g*2+2}:color=white@0.60:t=1")
-
-            # Connector: horizontal line from dot to callout column
-            lx     = px + (85 if go_right else -85)
-            ly     = py - 22
-            hx1    = px + (g if go_right else -(g))
-            hx2    = lx
-            hy     = py
-            hlen   = abs(hx2 - hx1)
-            if hlen > 0:
-                filters.append(
-                    f"drawbox=x={min(hx1,hx2)}:y={hy-1}:w={hlen}:h=2:color={c}@0.75:t=fill"
-                )
-            # Vertical leg up to callout badge
-            vlen = abs(py - ly)
-            if vlen > 0:
-                filters.append(
-                    f"drawbox=x={lx-1}:y={min(py,ly)}:w=2:h={vlen}:color={c}@0.75:t=fill"
-                )
-            # Callout badge (solid square at tip of line)
-            b = 9
-            filters.append(f"drawbox=x={lx-b}:y={ly-b}:w={b*2}:h={b*2}:color={c}@0.95:t=fill")
-            filters.append(f"drawbox=x={lx-b-1}:y={ly-b-1}:w={b*2+2}:h={b*2+2}:color=white@0.50:t=1")
-
-        # Score bar panel — bottom-right corner (drawbox only, no text)
-        score_vals = [
-            scores.get("technique",         5),
-            scores.get("body_position",     5),
-            scores.get("spatial_awareness", 5),
-            scores.get("decision_making",   5),
-            scores.get("effort",            5),
-        ]
-        bar_w   = 80
-        bar_h   = 7
-        row_h   = 14
-        panel_h = len(score_vals) * row_h + 10
-        px0     = w - bar_w - 18
-        py0     = h - panel_h - 12
-
-        # Panel background
-        filters.append(
-            f"drawbox=x={px0-6}:y={py0-6}:w={bar_w+12}:h={panel_h+10}:"
-            f"color=0x050505@0.88:t=fill"
-        )
-        # Green accent bar at top of panel (acts as "TACTIFY" brand marker)
-        filters.append(
-            f"drawbox=x={px0-6}:y={py0-6}:w={bar_w+12}:h=3:color=0x00FF87@0.90:t=fill"
-        )
-
-        for j, val in enumerate(score_vals):
-            y  = py0 + j * row_h
-            bc = "0x10B981" if val >= 8 else "0xF59E0B" if val >= 6 else "0xEF4444"
-            # Track
-            filters.append(f"drawbox=x={px0}:y={y}:w={bar_w}:h={bar_h}:color=0x1a1a1a@0.90:t=fill")
-            # Fill
-            fill = max(2, int(bar_w * val / 10))
-            filters.append(f"drawbox=x={px0}:y={y}:w={fill}:h={bar_h}:color={bc}@0.90:t=fill")
-
-        vf = ",".join(filters)
-
+        # Composite: [video][overlay_png] → output, preserving original audio
         result = subprocess.run(
-            [ffmpeg_bin, "-y", "-i", vpath,
-             "-vf", vf,
+            [ffmpeg_bin, "-y",
+             "-i", vpath,
+             "-i", opath,
+             "-filter_complex", "[0:v][1:v]overlay=0:0[vout]",
+             "-map", "[vout]",
+             "-map", "0:a?",          # pass through original audio if present
              "-c:v", "libx264",
              "-pix_fmt", "yuv420p",
              "-crf", "21",
@@ -1049,8 +994,7 @@ def create_annotated_video_simple(
              out_path],
             capture_output=True, timeout=180,
         )
-
-        if result.returncode == 0 and os.path.exists(out_path):
+        if result.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
             with open(out_path, "rb") as f:
                 return f.read()
         return None
@@ -1058,9 +1002,10 @@ def create_annotated_video_simple(
     except Exception:
         return None
     finally:
-        for p in [vpath, out_path]:
-            try: os.unlink(p)
-            except OSError: pass
+        for p in [vpath, opath, out_path]:
+            if p:
+                try: os.unlink(p)
+                except OSError: pass
 
 
 def generate_coaching_audio(data: dict, position: str) -> bytes | None:
