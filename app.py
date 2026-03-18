@@ -10,7 +10,10 @@ import json as _json
 import os
 import urllib.parse
 import zlib
+from datetime import datetime
 
+import anthropic as _anthropic
+import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as st_components
 from dotenv import load_dotenv
@@ -22,7 +25,7 @@ from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
                        extract_moment_clip)
 from pdf_report import generate_pdf_report
 
-load_dotenv()
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -143,6 +146,45 @@ hr { border-color: #1a1a1a !important; margin: 2rem 0 !important; }
     color: #00FF87 !important;
     border-bottom: 2px solid #00FF87 !important;
 }
+
+/* ─ Camera input ─ */
+[data-testid="stCameraInput"] {
+    background: #111 !important;
+    border: 1.5px dashed #2a2a2a !important;
+    border-radius: 12px !important;
+}
+[data-testid="stCameraInput"] button {
+    background: #00FF87 !important;
+    color: #0a0a0a !important;
+    border-radius: 8px !important;
+    font-weight: 800 !important;
+}
+
+/* ─ Progress bar ─ */
+[data-testid="stProgressBar"] > div > div {
+    background: #00FF87 !important;
+}
+
+/* ─ Chat input ─ */
+[data-testid="stChatInput"] textarea {
+    background: #111 !important;
+    border: 1.5px solid #1e1e1e !important;
+    color: #fff !important;
+    border-radius: 10px !important;
+}
+[data-testid="stChatMessageContent"] {
+    background: #111 !important;
+    border: 1px solid #1e1e1e !important;
+    border-radius: 10px !important;
+}
+
+/* ─ Mobile responsive ─ */
+@media (max-width: 768px) {
+    .main .block-container { padding: 0 1rem 4rem !important; }
+    [data-testid="stHorizontalBlock"] { flex-direction: column !important; }
+    [data-testid="stHorizontalBlock"] > div { width: 100% !important; min-width: 100% !important; }
+    .stTabs [data-baseweb="tab"] { padding: 10px 12px !important; font-size: 9px !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -212,6 +254,129 @@ def render_scores(scores: dict):
         </div>
         """, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ── Section: Radar Chart ──────────────────────────────────────────────────────
+
+def render_radar_chart(scores: dict):
+    keys  = ["technique", "body_position", "spatial_awareness", "decision_making", "effort"]
+    cats  = ["Technique", "Body Position", "Spatial\nAwareness", "Decision\nMaking", "Effort"]
+    vals  = [scores.get(k, 0) for k in keys]
+    vals_c = vals + [vals[0]]
+    cats_c = cats + [cats[0]]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=vals_c,
+        theta=cats_c,
+        fill="toself",
+        fillcolor="rgba(0,255,135,0.10)",
+        line=dict(color="#00FF87", width=2),
+        marker=dict(size=7, color="#00FF87"),
+    ))
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True, range=[0, 10],
+                gridcolor="#1e1e1e", linecolor="#1e1e1e",
+                tickfont=dict(color="#444", size=9),
+                tickvals=[2, 4, 6, 8, 10],
+            ),
+            angularaxis=dict(
+                gridcolor="#1e1e1e", linecolor="#2a2a2a",
+                tickfont=dict(color="#888", size=11),
+            ),
+            bgcolor="#0a0a0a",
+        ),
+        paper_bgcolor="#0a0a0a",
+        margin=dict(l=30, r=30, t=30, b=30),
+        showlegend=False,
+        height=300,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+# ── Section: Stat Card PNG ─────────────────────────────────────────────────────
+
+def generate_stat_card_png(scores: dict, position: str, age_group: str, summary: str = "") -> bytes | None:
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        W, H = 1080, 1080
+        img = Image.new("RGB", (W, H), (10, 10, 10))
+        d = ImageDraw.Draw(img)
+
+        # Background grid lines
+        for i in range(0, W, 60):
+            d.line([(i, 0), (i, H)], fill=(20, 20, 20), width=1)
+        for i in range(0, H, 60):
+            d.line([(0, i), (W, i)], fill=(20, 20, 20), width=1)
+
+        # Accent border
+        d.rectangle([0, 0, W-1, H-1], outline=(0, 255, 135), width=3)
+        d.rectangle([8, 8, W-9, H-9], outline=(30, 30, 30), width=1)
+
+        # Try to load a font, fallback to default
+        try:
+            font_big   = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 120)
+            font_title = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 72)
+            font_med   = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 38)
+            font_small = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 26)
+            font_xs    = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 22)
+        except Exception:
+            font_big = font_title = font_med = font_small = font_xs = ImageFont.load_default()
+
+        # TACTIFY header
+        d.text((54, 54), "TACTIFY", font=font_title, fill=(255, 255, 255))
+        d.text((54, 140), "AI SOCCER COACHING PLATFORM", font=font_xs, fill=(60, 60, 60))
+
+        # Neon line separator
+        d.rectangle([54, 178, W-54, 181], fill=(0, 255, 135))
+
+        # Overall score
+        keys = ["technique", "body_position", "spatial_awareness", "decision_making", "effort"]
+        vals = [scores.get(k, 5) for k in keys]
+        overall = round(sum(vals) / len(vals), 1)
+        oc = (0, 255, 135) if overall >= 8 else (255, 199, 0) if overall >= 6 else (255, 68, 68)
+
+        d.text((54, 210), str(overall), font=font_big, fill=oc)
+        d.text((54, 345), "OVERALL SCORE", font=font_xs, fill=(80, 80, 80))
+
+        # Position badge
+        pos_short = position.split("(")[-1].rstrip(")") if "(" in position else position[:10]
+        d.rectangle([W-300, 210, W-54, 300], fill=(20, 20, 20), outline=(0, 255, 135), width=2)
+        d.text((W-280, 232), pos_short, font=font_med, fill=(0, 255, 135))
+
+        # Category bars
+        bar_labels = ["TECHNIQUE", "BODY POS.", "SPATIAL", "DECISIONS", "EFFORT"]
+        bar_keys   = ["technique", "body_position", "spatial_awareness", "decision_making", "effort"]
+        bar_y = 420
+        for i, (lbl, key) in enumerate(zip(bar_labels, bar_keys)):
+            v   = scores.get(key, 5)
+            c   = (0, 255, 135) if v >= 8 else (255, 199, 0) if v >= 6 else (255, 68, 68)
+            y   = bar_y + i * 88
+            d.text((54, y), lbl, font=font_xs, fill=(100, 100, 100))
+            d.text((W-140, y), f"{v}/10", font=font_med, fill=c)
+            # Track
+            d.rectangle([54, y+36, W-54, y+52], fill=(25, 25, 25))
+            # Fill
+            fill_w = int((W - 108) * v / 10)
+            d.rectangle([54, y+36, 54+fill_w, y+52], fill=c)
+
+        # Summary snippet
+        if summary:
+            d.rectangle([54, H-170, W-54, H-54], fill=(18, 18, 18))
+            snippet = summary[:100] + ("…" if len(summary) > 100 else "")
+            d.text((70, H-152), f'"{snippet}"', font=font_xs, fill=(120, 120, 120))
+
+        # Date footer
+        d.text((54, H-38), datetime.now().strftime("%B %d, %Y"), font=font_xs, fill=(40, 40, 40))
+        d.text((W-280, H-38), "tactify.app", font=font_xs, fill=(40, 40, 40))
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
 
 
 # ── Section: Annotation Legend ────────────────────────────────────────────────
@@ -810,6 +975,14 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ── Session history (persists across reruns) ──────────────────────────────────
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "coach_messages" not in st.session_state:
+    st.session_state.coach_messages = []
+if "coach_context" not in st.session_state:
+    st.session_state.coach_context = None
+
 # ── Mode Tabs ─────────────────────────────────────────────────────────────────
 
 tab_single, tab_compare, tab_team = st.tabs(["Single Session", "Before / After Comparison", "Team Dashboard"])
@@ -822,18 +995,42 @@ with tab_single:
     col_up, col_ctx = st.columns([1.5, 1], gap="large")
 
     with col_up:
-        label("Upload Footage")
-        uploaded_file = st.file_uploader(
-            "footage",
-            type=["jpg", "jpeg", "png", "mp4", "mov"],
+        # ── Input mode toggle ─────────────────────────────────────────────────
+        _input_mode = st.radio(
+            "input_mode",
+            ["📁  Upload File", "📷  Webcam Capture"],
+            horizontal=True,
             label_visibility="collapsed",
         )
-        if uploaded_file:
-            file_bytes = uploaded_file.read()
-            is_video = uploaded_file.type in ("video/mp4", "video/quicktime")
-            if is_video:
-                st.video(io.BytesIO(file_bytes))
-            else:
+        gap(8)
+
+        uploaded_file  = None
+        webcam_capture = None
+        file_bytes     = None
+
+        if _input_mode == "📁  Upload File":
+            label("Upload Footage")
+            uploaded_file = st.file_uploader(
+                "footage",
+                type=["jpg", "jpeg", "png", "mp4", "mov"],
+                label_visibility="collapsed",
+            )
+            if uploaded_file:
+                file_bytes = uploaded_file.read()
+                is_video = uploaded_file.type in ("video/mp4", "video/quicktime")
+                if is_video:
+                    st.video(io.BytesIO(file_bytes))
+                else:
+                    st.image(file_bytes, use_container_width=True)
+        else:
+            label("Webcam Capture")
+            st.markdown(
+                '<div style="color:#555;font-size:12px;margin-bottom:8px;">Point camera at player · hit Capture · then Run Analysis</div>',
+                unsafe_allow_html=True,
+            )
+            webcam_capture = st.camera_input("Capture frame", label_visibility="collapsed")
+            if webcam_capture:
+                file_bytes = webcam_capture.read()
                 st.image(file_bytes, use_container_width=True)
 
     with col_ctx:
@@ -844,27 +1041,44 @@ with tab_single:
         notes     = st.text_area("Notes", height=80, label_visibility="collapsed",
                                   placeholder="e.g. right-footed striker, focus on off-ball movement…")
         gap(10)
-        run = st.button("Run Analysis ▶", use_container_width=True, disabled=not uploaded_file)
+        _has_input = bool(uploaded_file or webcam_capture)
+        run = st.button("Run Analysis ▶", use_container_width=True, disabled=not _has_input)
 
     st.markdown('<hr>', unsafe_allow_html=True)
 
     # ── Results (single session) ───────────────────────────────────────────────
 
-    if uploaded_file and run:
-        is_video = uploaded_file.type in ("video/mp4", "video/quicktime")
+    if _has_input and run:
+        # Webcam captures are always JPEG images; file uploads can be video
+        if webcam_capture:
+            is_video   = False
+            file_type  = "image/jpeg"
+        else:
+            is_video   = uploaded_file.type in ("video/mp4", "video/quicktime")
+            file_type  = uploaded_file.type
+
+        # Safe filename stem for downloads
+        if webcam_capture:
+            _fname_stem = "webcam_capture"
+        else:
+            _fname_stem = uploaded_file.name.rsplit(".", 1)[0]
+
+        # ── Progress bar ───────────────────────────────────────────────────────
+        _prog = st.progress(0, text="⚽  Initializing AI analysis engine…")
 
         # ── Step 1: Claude analysis ────────────────────────────────────────────
-        with st.spinner("Analyzing footage with AI…"):
-            result = analyze_media(
-                file_bytes=file_bytes,
-                file_type=uploaded_file.type,
-                position=position,
-                play_type=play_type,
-                age_group=age_group,
-                additional_notes=notes,
-            )
+        _prog.progress(10, text="🧠  Claude Vision analyzing footage…")
+        result = analyze_media(
+            file_bytes=file_bytes,
+            file_type=file_type,
+            position=position,
+            play_type=play_type,
+            age_group=age_group,
+            additional_notes=notes,
+        )
 
         if not result["success"]:
+            _prog.empty()
             st.error(f"Analysis failed: {result['error']}")
             st.stop()
 
@@ -873,10 +1087,22 @@ with tab_single:
         scores      = data.get("scores", {})
         summary     = e(data.get("summary", ""))
 
+        # Save to session history
+        st.session_state.history.append({
+            "session": len(st.session_state.history) + 1,
+            "timestamp": datetime.now().strftime("%H:%M"),
+            "position": position,
+            "scores": dict(scores),
+            "summary": data.get("summary", ""),
+        })
+        # Reset chat context for new analysis
+        st.session_state.coach_messages = []
+        st.session_state.coach_context = data
+
         # ── Step 2: Coaching audio ────────────────────────────────────────────
+        _prog.progress(45, text="🎙  Generating neural coaching voice…")
         try:
-            with st.spinner("Generating coaching audio narration…"):
-                audio_bytes = generate_coaching_audio(data, position)
+            audio_bytes = generate_coaching_audio(data, position)
         except Exception as _ae:
             audio_bytes = None
 
@@ -888,15 +1114,15 @@ with tab_single:
         num_kf      = len(result.get("key_frames", [])) or 4
         if is_video:
             try:
-                with st.spinner("Adding coaching overlay to video…"):
-                    annotated_video = create_annotated_video_simple(
-                        file_bytes, annotations, scores,
-                        skeleton=data.get("skeleton"),
-                    )
+                _prog.progress(60, text="🎬  Rendering coaching overlay on video…")
+                annotated_video = create_annotated_video_simple(
+                    file_bytes, annotations, scores,
+                    skeleton=data.get("skeleton"),
+                )
                 base_video = annotated_video if annotated_video else file_bytes
                 if audio_bytes:
-                    with st.spinner("Merging coaching audio into video…"):
-                        merged = merge_audio_into_video(base_video, audio_bytes)
+                    _prog.progress(75, text="🔊  Merging coaching audio into video…")
+                    merged = merge_audio_into_video(base_video, audio_bytes)
                     final_video = merged if merged else base_video
                 else:
                     final_video = base_video
@@ -908,11 +1134,14 @@ with tab_single:
             best_fn  = data.get("best_moment",  {}).get("frame", 1)
             worst_fn = data.get("worst_moment", {}).get("frame", 1)
             try:
-                with st.spinner("Extracting key moment clips…"):
-                    best_clip  = extract_moment_clip(file_bytes, best_fn,  num_kf)
-                    worst_clip = extract_moment_clip(file_bytes, worst_fn, num_kf)
+                _prog.progress(88, text="✂️  Extracting key moment clips…")
+                best_clip  = extract_moment_clip(file_bytes, best_fn,  num_kf)
+                worst_clip = extract_moment_clip(file_bytes, worst_fn, num_kf)
             except Exception:
                 pass
+
+        _prog.progress(100, text="✅  Analysis complete!")
+        _prog.empty()
 
         # ── Summary banner ─────────────────────────────────────────────────────
         sum_col, aud_col = st.columns([1.6, 1], gap="large")
@@ -926,14 +1155,22 @@ with tab_single:
             </div>
             """, unsafe_allow_html=True)
         with aud_col:
-            # For images show standalone audio player; for videos it's synced in HTML player below
+            # For images show auto-playing audio; for videos it's synced in HTML player below
             if audio_bytes and not is_video:
                 st.markdown(
                     '<div style="color:#444;font-size:10px;letter-spacing:3px;'
                     'text-transform:uppercase;font-weight:700;margin-bottom:8px;">🎙 Coaching Audio</div>',
                     unsafe_allow_html=True,
                 )
-                st.audio(audio_bytes, format="audio/mp3")
+                _aud_b64 = base64.b64encode(audio_bytes).decode()
+                st_components.html(f"""
+<audio id="coach_audio" controls autoplay style="width:100%;margin-top:4px;">
+  <source src="data:audio/mp3;base64,{_aud_b64}" type="audio/mp3">
+</audio>
+<script>
+  document.getElementById('coach_audio').volume = 0.85;
+</script>
+""", height=60)
 
         # ── Media + Scores ─────────────────────────────────────────────────────
         col_media, col_scores = st.columns([1.2, 1], gap="large")
@@ -1048,6 +1285,8 @@ with tab_single:
             label("Performance Scores")
             if scores:
                 render_scores(scores)
+                gap(8)
+                render_radar_chart(scores)
 
         # ── Priority Fix ───────────────────────────────────────────────────────
         if data.get("priority_fix"):
@@ -1147,7 +1386,7 @@ with tab_single:
         # ── Downloads ──────────────────────────────────────────────────────────
         gap(24)
         label("Downloads")
-        dl_cols = st.columns([1, 1, 1, 1])
+        dl_cols = st.columns([1, 1, 1, 1, 1])
 
         # PDF scouting report (primary download)
         with dl_cols[0]:
@@ -1161,7 +1400,7 @@ with tab_single:
                 st.download_button(
                     "⬇ PDF Scouting Report",
                     data=_pdf_bytes,
-                    file_name=f"tactify_report_{uploaded_file.name.rsplit('.', 1)[0]}.pdf",
+                    file_name=f"tactify_report_{_fname_stem}.pdf",
                     mime="application/pdf",
                 )
             else:
@@ -1169,7 +1408,7 @@ with tab_single:
                 st.download_button(
                     "⬇ Player Report Card",
                     data=report_html,
-                    file_name=f"tactify_report_{uploaded_file.name.rsplit('.', 1)[0]}.html",
+                    file_name=f"tactify_report_{_fname_stem}.html",
                     mime="text/html",
                 )
 
@@ -1177,37 +1416,194 @@ with tab_single:
             st.download_button(
                 "⬇ Raw Data (JSON)",
                 data=_json.dumps(data, indent=2),
-                file_name=f"tactify_{uploaded_file.name.rsplit('.', 1)[0]}.json",
+                file_name=f"tactify_{_fname_stem}.json",
                 mime="application/json",
             )
+
+        # Stat card PNG download
+        with dl_cols[2]:
+            _card_png = generate_stat_card_png(scores, position, age_group, data.get("summary", ""))
+            if _card_png:
+                st.download_button(
+                    "⬇ Player Stat Card",
+                    data=_card_png,
+                    file_name=f"tactify_statcard_{_fname_stem}.png",
+                    mime="image/png",
+                )
+
         if is_video and final_video:
-            with dl_cols[2]:
+            with dl_cols[3]:
                 st.download_button(
                     "⬇ Coaching Video",
                     data=final_video,
-                    file_name=f"tactify_coached_{uploaded_file.name}",
+                    file_name=f"tactify_coached_{_fname_stem}.mp4",
                     mime="video/mp4",
                 )
         if audio_bytes:
-            with dl_cols[3]:
+            with dl_cols[4]:
                 st.download_button(
                     "⬇ Coaching Audio",
                     data=audio_bytes,
-                    file_name=f"tactify_audio_{uploaded_file.name.rsplit('.', 1)[0]}.mp3",
+                    file_name=f"tactify_audio_{_fname_stem}.mp3",
                     mime="audio/mp3",
                 )
 
-    elif not uploaded_file:
+        # ── Progress Dashboard ──────────────────────────────────────────────────
+        if len(st.session_state.history) > 1:
+            gap(40)
+            label("Progress Tracker · Session History")
+            _hist = st.session_state.history
+            _categories = [
+                ("Technique",         "technique"),
+                ("Body Position",     "body_position"),
+                ("Spatial Awareness", "spatial_awareness"),
+                ("Decision Making",   "decision_making"),
+                ("Effort",            "effort"),
+            ]
+            _sessions = [h["session"] for h in _hist]
+            _colors = ["#00FF87", "#FFC700", "#00BFFF", "#FF6B6B", "#B06EFF"]
+            fig_hist = go.Figure()
+            for (cat_label, cat_key), color in zip(_categories, _colors):
+                fig_hist.add_trace(go.Scatter(
+                    x=_sessions,
+                    y=[h["scores"].get(cat_key, 5) for h in _hist],
+                    mode="lines+markers",
+                    name=cat_label,
+                    line=dict(color=color, width=2),
+                    marker=dict(size=8, color=color),
+                ))
+            fig_hist.update_layout(
+                paper_bgcolor="#0a0a0a",
+                plot_bgcolor="#0d0d0d",
+                xaxis=dict(
+                    title="Session", gridcolor="#1a1a1a", linecolor="#1e1e1e",
+                    tickfont=dict(color="#555"), titlefont=dict(color="#555"),
+                    tickvals=_sessions,
+                ),
+                yaxis=dict(
+                    title="Score", range=[0, 10], gridcolor="#1a1a1a", linecolor="#1e1e1e",
+                    tickfont=dict(color="#555"), titlefont=dict(color="#555"),
+                ),
+                legend=dict(
+                    bgcolor="#111", bordercolor="#1e1e1e", borderwidth=1,
+                    font=dict(color="#888", size=11),
+                ),
+                margin=dict(l=50, r=20, t=20, b=40),
+                height=320,
+            )
+            st.plotly_chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
+
+        # ── Ask the Coach ───────────────────────────────────────────────────────
+        gap(40)
         st.markdown("""
-        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
-                    height:280px;background:#111;border:1.5px dashed #1e1e1e;border-radius:14px;
-                    text-align:center;padding:40px;">
-            <div style="font-size:36px;margin-bottom:16px;opacity:0.25;">◎</div>
-            <div style="color:#333;font-size:14px;font-weight:600;letter-spacing:0.5px;">
-                Upload footage to begin analysis
+        <div style="border-left:3px solid #00FF87;padding:12px 20px;background:#00FF870a;
+                    border-radius:0 10px 10px 0;margin-bottom:20px;">
+            <div style="color:#00FF87;font-size:10px;letter-spacing:3px;text-transform:uppercase;
+                        font-weight:700;margin-bottom:4px;">Ask the Coach</div>
+            <div style="color:#555;font-size:13px;">
+                Chat with your AI coach about this analysis — ask about scores, drills, technique, anything.
             </div>
-            <div style="color:#2a2a2a;font-size:12px;margin-top:8px;letter-spacing:1px;text-transform:uppercase;">
-                Images · MP4 · MOV · Up to 5 minutes
+        </div>
+        """, unsafe_allow_html=True)
+
+        for _msg in st.session_state.coach_messages:
+            with st.chat_message(_msg["role"]):
+                st.write(_msg["content"])
+
+        if _chat_input := st.chat_input("Ask your coach anything about this analysis…"):
+            st.session_state.coach_messages.append({"role": "user", "content": _chat_input})
+            with st.chat_message("user"):
+                st.write(_chat_input)
+            with st.chat_message("assistant"):
+                with st.spinner("Coach thinking…"):
+                    try:
+                        _client = _anthropic.Anthropic()
+                        _ctx = _json.dumps(st.session_state.coach_context or data, indent=2)
+                        _resp = _client.messages.create(
+                            model="claude-sonnet-4-6",
+                            max_tokens=1024,
+                            system=(
+                                f"You are an expert soccer coach called Coach AI on the Tactify platform. "
+                                f"You have just analyzed footage of a {position} player. "
+                                f"Here is the full analysis data:\n{_ctx}\n\n"
+                                f"Answer questions in a direct, motivating coaching style. "
+                                f"Keep responses concise (2-4 sentences) and always actionable."
+                            ),
+                            messages=[{"role": m["role"], "content": m["content"]}
+                                      for m in st.session_state.coach_messages],
+                        )
+                        _answer = _resp.content[0].text
+                    except Exception as _ce:
+                        _answer = f"Coach unavailable right now: {_ce}"
+                    st.write(_answer)
+                    st.session_state.coach_messages.append({"role": "assistant", "content": _answer})
+
+    elif not _has_input:
+        gap(16)
+        st.markdown("""
+        <div style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:16px;padding:40px 36px;margin-bottom:24px;">
+            <div style="font-size:10px;color:#00FF87;letter-spacing:4px;font-weight:700;
+                        text-transform:uppercase;margin-bottom:20px;">What Tactify Does</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;">
+                <div style="background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;">
+                    <div style="font-size:22px;margin-bottom:10px;">🧠</div>
+                    <div style="color:#fff;font-size:13px;font-weight:700;margin-bottom:6px;">Claude Vision Analysis</div>
+                    <div style="color:#555;font-size:12px;line-height:1.6;">
+                        6-frame AI breakdown of body position, decision-making, technique, and spatial awareness.
+                    </div>
+                </div>
+                <div style="background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;">
+                    <div style="font-size:22px;margin-bottom:10px;">🎯</div>
+                    <div style="color:#fff;font-size:13px;font-weight:700;margin-bottom:6px;">Live Annotation Overlay</div>
+                    <div style="color:#555;font-size:12px;line-height:1.6;">
+                        Dots, arrows, and callouts track the player frame-by-frame with motion-aware positioning.
+                    </div>
+                </div>
+                <div style="background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;">
+                    <div style="font-size:22px;margin-bottom:10px;">🎙</div>
+                    <div style="color:#fff;font-size:13px;font-weight:700;margin-bottom:6px;">Neural Coaching Voice</div>
+                    <div style="color:#555;font-size:12px;line-height:1.6;">
+                        Auto-plays an expert coaching narration the moment analysis completes.
+                    </div>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:20px;">
+                <div style="background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;">
+                    <div style="font-size:22px;margin-bottom:10px;">📊</div>
+                    <div style="color:#fff;font-size:13px;font-weight:700;margin-bottom:6px;">Radar + Progress Charts</div>
+                    <div style="color:#555;font-size:12px;line-height:1.6;">
+                        Spider chart of all scores. Multi-session progress tracker shows improvement over time.
+                    </div>
+                </div>
+                <div style="background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;">
+                    <div style="font-size:22px;margin-bottom:10px;">💬</div>
+                    <div style="color:#fff;font-size:13px;font-weight:700;margin-bottom:6px;">Ask the Coach Chat</div>
+                    <div style="color:#555;font-size:12px;line-height:1.6;">
+                        Chat with Claude about your analysis. Ask anything — drills, scores, technique fixes.
+                    </div>
+                </div>
+                <div style="background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;">
+                    <div style="font-size:22px;margin-bottom:10px;">📄</div>
+                    <div style="color:#fff;font-size:13px;font-weight:700;margin-bottom:6px;">PDF + Stat Card Export</div>
+                    <div style="color:#555;font-size:12px;line-height:1.6;">
+                        Professional scouting report PDF and a shareable 1080×1080 player stat card PNG.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div style="width:6px;height:6px;border-radius:50%;background:#00FF87;box-shadow:0 0 6px #00FF87;"></div>
+                <span style="color:#444;font-size:12px;letter-spacing:1px;">MP4 · MOV · JPG · PNG</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div style="width:6px;height:6px;border-radius:50%;background:#00FF87;box-shadow:0 0 6px #00FF87;"></div>
+                <span style="color:#444;font-size:12px;letter-spacing:1px;">Or use your webcam — no file needed</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div style="width:6px;height:6px;border-radius:50%;background:#00FF87;box-shadow:0 0 6px #00FF87;"></div>
+                <span style="color:#444;font-size:12px;letter-spacing:1px;">Results in ~20 seconds</span>
             </div>
         </div>
         """, unsafe_allow_html=True)

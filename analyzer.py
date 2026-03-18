@@ -18,7 +18,10 @@ from typing import Callable
 import shutil
 
 import anthropic
+from dotenv import load_dotenv
 from knowledge_base import get_relevant_knowledge
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
 
 
 def _ffmpeg_exe() -> str | None:
@@ -209,12 +212,16 @@ LANGUAGE STANDARD:
 }}
 
 REQUIREMENTS:
-- 4–5 annotations, each on a different body region
+- 5–6 annotations spread across different body regions and different frames
 - 2–3 fix cards, each a distinct technical issue
 - Every note/correction must reference something literally visible in the footage
 - Drills must be executable solo unless stated — include distances in meters or yards, rep counts
 - No generic soccer advice. This is used by professional coaches and players worldwide.
-- x_pct / y_pct: You are looking at the actual image. Estimate where the relevant body part ACTUALLY appears on screen. Do NOT use generic center values — look at the real pixel positions. A player standing to the right of frame has x_pct ~0.7; a player's foot near the bottom has y_pct ~0.85. Be precise.
+- x_pct / y_pct PRECISION — this is critical for annotation placement. Think of each frame as a grid:
+    Horizontal thirds: left-third x≈0.15, center x≈0.50, right-third x≈0.85
+    Vertical quarters: head/sky y≈0.05–0.15, upper body y≈0.20–0.35, hips y≈0.45–0.55, knees y≈0.60–0.70, feet y≈0.80–0.92
+    A player standing left-of-center has x_pct ~0.30; their planting foot at bottom of frame has y_pct ~0.88.
+    Look at the ACTUAL pixel position of the specific body part. Do NOT default to 0.5/0.5. Do NOT use the same x/y for multiple annotations.
 - vector field: Include ONLY when there is a clear directional correction or movement to show (body rotation, weight shift, pass direction, run path, hip opening). Use dx/dy as a normalized direction unit: positive x = right, negative x = left, positive y = downward, negative y = upward. Magnitude 0.15–0.55. Omit "vector" entirely for static technique issues (e.g. stiff ankle, wrong foot planted). Examples: hip needs to open left → {{"dx": -0.4, "dy": 0.1}}; player should step forward → {{"dx": 0.1, "dy": 0.35}}.
 - skeleton: Pick the ONE frame that shows the clearest full-body pose. Map every visible joint to its ACTUAL pixel position as x/y fractions. If a joint is hidden or out of frame set both to -1. Include 2–4 key_angles at the joints most relevant to the coaching feedback (e.g. knee flexion on contact, hip angle on pass). assessment=good means the angle is optimal for the action; warning means improvable; error means a technical flaw.
 """
@@ -227,40 +234,100 @@ def _b64(data: bytes) -> str:
 
 
 def _parse_json(text: str) -> dict | None:
+    # Strip markdown code fences
     text = re.sub(r"```(?:json)?\s*", "", text).strip()
+    text = re.sub(r"```\s*$", "", text).strip()
+
+    # 1. Try clean parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group())
-            except Exception:
-                pass
+        pass
+
+    # 2. Extract outermost {...} block
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Truncated response recovery — find the largest valid prefix
+    # Walk backwards from end, trying to close any open braces/brackets
+    raw = m.group() if m else text
+    for end in range(len(raw), 0, -1):
+        candidate = raw[:end]
+        # Count open braces/brackets and try to close them
+        opens = candidate.count("{") - candidate.count("}")
+        opens_sq = candidate.count("[") - candidate.count("]")
+        if opens < 0 or opens_sq < 0:
+            continue
+        closed = candidate + ("]" * opens_sq) + ("}" * opens)
+        try:
+            result = json.loads(closed)
+            if isinstance(result, dict) and "scores" in result:
+                print("[tactify] _parse_json: recovered truncated JSON")
+                return result
+        except json.JSONDecodeError:
+            continue
+
     return None
 
 
 def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
     """
     Extract evenly-spaced frames without ffprobe.
-    Uses imageio_ffmpeg for duration metadata, then the bundled ffmpeg binary
-    for reliable per-timestamp frame extraction via PNG pipe.
+    Multiple fallback strategies so something always works on cloud.
     """
     import subprocess
 
     try:
         import imageio_ffmpeg
     except ImportError:
+        print("[tactify] imageio_ffmpeg not available")
         return []
 
+    # Use a suffix that ffmpeg auto-detects; .mp4 is fine for most uploads
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp.write(video_bytes)
         path = tmp.name
 
     try:
         ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        print(f"[tactify] ffmpeg binary: {ffmpeg_bin}")
 
-        # ── Get duration via imageio_ffmpeg metadata (no ffprobe needed) ─────
+        # ── Strategy 1: imageio_ffmpeg.read_frames() raw frame iteration ─────
+        # Most reliable on cloud — uses the bundled binary internally
+        try:
+            from PIL import Image as _PILImage
+            gen  = imageio_ffmpeg.read_frames(path)
+            meta = next(gen)
+            w, h = meta["size"]
+            print(f"[tactify] meta: size={w}x{h} duration={meta.get('duration')}")
+
+            raw_frames: list[bytes] = []
+            for raw in gen:
+                raw_frames.append(raw)
+                if len(raw_frames) >= num_frames * 10:   # cap memory
+                    break
+            gen.close()
+
+            if raw_frames:
+                n       = len(raw_frames)
+                indices = [int(n * (i + 1) / (num_frames + 1)) for i in range(num_frames)]
+                result  = []
+                for idx in indices:
+                    frame_raw = raw_frames[min(idx, n - 1)]
+                    img = _PILImage.frombytes("RGB", (w, h), frame_raw)
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=85)
+                    result.append(buf.getvalue())
+                print(f"[tactify] strategy-1 extracted {len(result)} frames")
+                return result
+        except Exception as e:
+            print(f"[tactify] strategy-1 failed: {e}")
+
+        # ── Strategy 2: subprocess PNG pipe at timestamps ─────────────────────
         duration = 0.0
         try:
             gen      = imageio_ffmpeg.read_frames(path)
@@ -268,41 +335,48 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
             gen.close()
             duration = float(meta.get("duration") or 0)
         except Exception:
-            duration = 0.0
+            pass
 
-        # Build seek timestamps
-        if duration > 0.5:
-            timestamps = [duration * (i + 1) / (num_frames + 1) for i in range(num_frames)]
-        else:
-            # Very short clip — grab first frame multiple times (still works)
-            timestamps = [0.0] * num_frames
+        timestamps = (
+            [duration * (i + 1) / (num_frames + 1) for i in range(num_frames)]
+            if duration > 0.5
+            else [0.0] * num_frames
+        )
 
-        # ── Extract one frame per timestamp via PNG pipe ──────────────────────
         result = []
         for ts in timestamps:
             cmd = [ffmpeg_bin, "-y"]
             if ts > 0:
                 cmd += ["-ss", f"{ts:.3f}"]
-            cmd += ["-i", path,
-                    "-frames:v", "1",
+            cmd += ["-i", path, "-frames:v", "1",
                     "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
-            r = subprocess.run(cmd, capture_output=True, timeout=20)
+            r = subprocess.run(cmd, capture_output=True, timeout=30)
             if r.returncode == 0 and len(r.stdout) > 100:
                 result.append(r.stdout)
+            else:
+                print(f"[tactify] strategy-2 ts={ts:.1f} rc={r.returncode} "
+                      f"stderr={r.stderr[-200:].decode(errors='replace')}")
 
-        # ── Fallback: first frame if nothing worked ───────────────────────────
-        if not result:
-            r = subprocess.run(
-                [ffmpeg_bin, "-y", "-i", path,
-                 "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
-                capture_output=True, timeout=20,
-            )
-            if r.returncode == 0 and len(r.stdout) > 100:
-                result = [r.stdout] * num_frames
+        if result:
+            print(f"[tactify] strategy-2 extracted {len(result)} frames")
+            return result
 
-        return result
+        # ── Strategy 3: first frame JPEG pipe ────────────────────────────────
+        r = subprocess.run(
+            [ffmpeg_bin, "-y", "-i", path,
+             "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+            capture_output=True, timeout=30,
+        )
+        if r.returncode == 0 and len(r.stdout) > 100:
+            print("[tactify] strategy-3 (mjpeg) succeeded")
+            return [r.stdout] * num_frames
+        print(f"[tactify] strategy-3 failed rc={r.returncode} "
+              f"stderr={r.stderr[-200:].decode(errors='replace')}")
 
-    except Exception:
+        return []
+
+    except Exception as e:
+        print(f"[tactify] _extract_frames outer exception: {e}")
         return []
     finally:
         try:
@@ -603,6 +677,149 @@ def _build_overlay(w: int, h: int, annotations: list, scores: dict,
             draw.rectangle([px0, y, px0 + bar_w, y + bar_h], fill=(26, 26, 26, 180))
             fill_w = max(2, int(bar_w * val / 10))
             draw.rectangle([px0, y, px0 + fill_w, y + bar_h], fill=(*bc, 220))
+
+    return layer
+
+
+# ── Score panel overlay (static, pre-built once per video) ────────────────────
+
+def _build_score_overlay(w: int, h: int, scores: dict) -> "Image.Image":
+    """Render just the score panel onto a transparent RGBA canvas."""
+    from PIL import Image, ImageDraw
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if not scores:
+        return layer
+    score_items = [
+        scores.get("technique",         5),
+        scores.get("body_position",     5),
+        scores.get("spatial_awareness", 5),
+        scores.get("decision_making",   5),
+        scores.get("effort",            5),
+    ]
+    bar_w   = max(72, w // 9)
+    bar_h   = max(5, h // 72)
+    row_h   = bar_h + 8
+    panel_h = len(score_items) * row_h + 12
+    px0     = w - bar_w - 14
+    py0     = h - panel_h - 10
+    tmp = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(tmp).rectangle([px0 - 8, py0 - 6, w - 6, h - 6], fill=(5, 5, 5, 210))
+    layer = Image.alpha_composite(layer, tmp)
+    draw  = ImageDraw.Draw(layer)
+    draw.rectangle([px0 - 8, py0 - 6, w - 6, py0 - 3], fill=(0, 255, 135, 210))
+    for i, val in enumerate(score_items):
+        y  = py0 + i * row_h + 2
+        bc = (16, 185, 129) if val >= 8 else (245, 158, 11) if val >= 6 else (239, 68, 68)
+        draw.rectangle([px0, y, px0 + bar_w, y + bar_h], fill=(26, 26, 26, 180))
+        fill_w = max(2, int(bar_w * val / 10))
+        draw.rectangle([px0, y, px0 + fill_w, y + bar_h], fill=(*bc, 220))
+    return layer
+
+
+# ── Per-frame tracked annotation overlay ──────────────────────────────────────
+
+def _build_overlay_tracked(
+    w: int, h: int, anns: list, dx: int, dy: int, frame_idx: int
+) -> "Image.Image":
+    """
+    Like _build_overlay but shifts all annotation positions by (dx, dy) —
+    the estimated player motion delta from the key frame — and adds a
+    pulsing glow animation driven by frame_idx.
+    """
+    from PIL import Image, ImageDraw
+
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw  = ImageDraw.Draw(layer)
+
+    r           = max(14, min(w, h) // 30)
+    fsize_num   = max(12, r - 4)
+    fsize_label = max(10, r - 6)
+    font_num, font_lbl = _load_fonts(fsize_num, fsize_label)
+    pulse = 0.60 + 0.40 * abs(math.sin(frame_idx * 0.06))
+
+    for ann in anns[:6]:
+        region = ann.get("region", "body").lower()
+        sev    = ann.get("severity", "warning")
+        num    = ann.get("number", 1)
+        lbl    = ann.get("label", "")[:28]
+        rgb    = _SEV_RGB.get(sev, _SEV_RGB["warning"])
+
+        # Reference position from key frame, shifted by player motion delta
+        if ann.get("x_pct") is not None and ann.get("y_pct") is not None:
+            base_px = int(float(ann["x_pct"]) * w)
+            base_py = int(float(ann["y_pct"]) * h)
+        else:
+            fx, fy  = _REGION_FALLBACK.get(region, (0.5, 0.5))
+            base_px = int(fx * w)
+            base_py = int(fy * h)
+
+        px = max(r + 4, min(w - r - 4, base_px + dx))
+        py = max(r + 4, min(h - r - 4, base_py + dy))
+
+        # ── Vector arrow ──────────────────────────────────────────────────────
+        vec = ann.get("vector")
+        if vec and isinstance(vec, dict):
+            vdx = float(vec.get("dx", 0))
+            vdy = float(vec.get("dy", 0))
+            mag = math.sqrt(vdx * vdx + vdy * vdy)
+            if mag > 0.05:
+                arrow_len = max(50, min(w, h) // 5)
+                ex = max(4, min(w - 4, int(px + (vdx / mag) * arrow_len)))
+                ey = max(4, min(h - 4, int(py + (vdy / mag) * arrow_len)))
+                draw.line([(px, py), (ex, ey)], fill=(*rgb, 220), width=4)
+                adx, ady = ex - px, ey - py
+                dist = math.sqrt(adx * adx + ady * ady) or 1
+                ux, uy  = adx / dist, ady / dist
+                head    = max(14, arrow_len // 4)
+                ca, sa  = math.cos(0.45), math.sin(0.45)
+                for hx, hy in [
+                    (ex - head * (ux * ca + uy * sa), ey - head * (-ux * sa + uy * ca)),
+                    (ex - head * (ux * ca - uy * sa), ey - head * (ux * sa  + uy * ca)),
+                ]:
+                    draw.line([(ex, ey), (int(hx), int(hy))], fill=(*rgb, 220), width=4)
+
+        # ── Pulsing glow rings ────────────────────────────────────────────────
+        ga_outer = int(30 * pulse)
+        ga_inner = int(65 * pulse)
+        for gr, ga in [(r + 14, ga_outer), (r + 7, ga_inner)]:
+            tmp = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            ImageDraw.Draw(tmp).ellipse([px-gr, py-gr, px+gr, py+gr], fill=(*rgb, ga))
+            layer = Image.alpha_composite(layer, tmp)
+            draw  = ImageDraw.Draw(layer)
+
+        # ── Main dot ──────────────────────────────────────────────────────────
+        draw.ellipse([px-r, py-r, px+r, py+r],
+                     fill=(*rgb, 235), outline=(255, 255, 255, 220), width=2)
+        draw.text((px, py), str(num),
+                  fill=(255, 255, 255, 255), font=font_num, anchor="mm")
+
+        # ── Callout label ─────────────────────────────────────────────────────
+        if lbl:
+            go_right = px < w * 0.55
+            line_len = max(55, w // 9)
+            tip_x    = px + (r + line_len if go_right else -(r + line_len))
+            tip_y    = py - r // 2
+            draw.line([(px + (r if go_right else -r), py), (tip_x, tip_y)],
+                      fill=(*rgb, 170), width=2)
+            pad = 6
+            try:
+                bbox = draw.textbbox((0, 0), lbl, font=font_lbl)
+                lw, lh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except AttributeError:
+                lw, lh = int(len(lbl) * fsize_label * 0.6), fsize_label + 4
+            bx1 = tip_x if go_right else tip_x - lw - pad * 2
+            by1 = tip_y - lh // 2 - pad
+            bx2, by2 = bx1 + lw + pad * 2, by1 + lh + pad * 2
+            if bx2 > w - 4: d = bx2 - (w-4); bx1 -= d; bx2 -= d
+            if bx1 < 4:     d = 4 - bx1;     bx1 += d; bx2 += d
+            if by1 < 4:     by1 = 4;          by2 = by1 + lh + pad * 2
+            if by2 > h - 4: by2 = h-4;        by1 = by2 - lh - pad * 2
+            tmp3 = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            ImageDraw.Draw(tmp3).rectangle([bx1, by1, bx2, by2], fill=(8, 8, 8, 215))
+            layer = Image.alpha_composite(layer, tmp3)
+            draw  = ImageDraw.Draw(layer)
+            draw.rectangle([bx1, by1, bx2, by2], outline=(*rgb, 200), width=1)
+            draw.text((bx1 + pad, by1 + pad), lbl, fill=(*rgb, 230), font=font_lbl)
 
     return layer
 
@@ -940,7 +1157,7 @@ def analyze_media(
     media_type = "image/jpeg"
 
     if is_video:
-        image_list = _extract_frames(file_bytes, 4)
+        image_list = _extract_frames(file_bytes, 6)
         if not image_list:
             return {"success": False, "error": "Could not extract frames from video.",
                     "data": None, "annotated_image": None, "key_frames": [], "frames_analyzed": 0}
@@ -965,7 +1182,7 @@ def analyze_media(
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=4096,
+            max_tokens=8192,
             messages=[{"role": "user", "content": content}],
         )
         data = _parse_json(response.content[0].text)
@@ -1085,34 +1302,31 @@ def create_annotated_video_simple(
     progress_callback=None,
 ) -> bytes | None:
     """
-    Composite annotation overlays onto every video frame using imageio_ffmpeg
-    frame-by-frame so no ffprobe binary is required.
+    Composite annotation overlays onto every video frame using imageio_ffmpeg.
 
-    Each key-frame annotation group is shown during its corresponding time window
-    so dots/vectors reflect the positions observed in that segment of the clip.
+    Uses lightweight per-frame motion tracking (low-res frame differencing) to
+    shift annotation positions by how much the player has moved from the key
+    frame — so dots and arrows follow the player rather than staying fixed.
     """
     try:
         import imageio_ffmpeg
-        from PIL import Image
+        from PIL import Image, ImageChops
     except ImportError:
         return None
 
-    vpath    = None
-    out_path = None
-    writer   = None
+    vpath = out_path = writer = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tv:
             tv.write(video_bytes)
             vpath = tv.name
         out_path = vpath + "_annotated.mp4"
 
-        # ── Read metadata + all frames (no ffprobe needed) ───────────────────
+        # ── Read all frames ───────────────────────────────────────────────────
         gen      = imageio_ffmpeg.read_frames(vpath)
         meta     = next(gen)
         w, h     = meta["size"]
         fps      = float(meta.get("fps") or 25)
         duration = float(meta.get("duration") or 0.0)
-        # Ensure even dimensions (required by h264)
         w = w - (w % 2)
         h = h - (h % 2)
         frames   = list(gen)
@@ -1121,25 +1335,85 @@ def create_annotated_video_simple(
         if not frames:
             return None
 
-        # ── Pre-build one RGBA overlay PIL image per annotation group ─────────
+        n_frames = len(frames)
+
+        # ── Build PIL images for all frames ───────────────────────────────────
+        pil_frames = []
+        for raw in frames:
+            img = Image.frombytes("RGB", meta["size"], raw)
+            if img.size != (w, h):
+                img = img.crop((0, 0, w, h))
+            pil_frames.append(img)
+
+        # ── Lightweight per-frame player position tracking ────────────────────
+        # Downsample to 128×72 for fast frame differencing
+        TRACK_W, TRACK_H = 128, 72
+        track_imgs = [
+            img.resize((TRACK_W, TRACK_H), Image.BILINEAR).convert("L")
+            for img in pil_frames
+        ]
+
+        def _motion_center(i):
+            """Weighted centroid of pixels that changed between frames i-1 and i."""
+            if i == 0:
+                return None
+            diff_data  = list(ImageChops.difference(track_imgs[i], track_imgs[i - 1]).getdata())
+            threshold  = 20
+            wx = wy = total = 0.0
+            for idx, val in enumerate(diff_data):
+                if val > threshold:
+                    wx    += (idx % TRACK_W) * val
+                    wy    += (idx // TRACK_W) * val
+                    total += val
+            if total < 300:
+                return None
+            return (int(wx / total * w / TRACK_W), int(wy / total * h / TRACK_H))
+
+        raw_positions = [_motion_center(i) for i in range(n_frames)]
+
+        # Forward-fill gaps
+        last = (w // 2, h // 2)
+        for i in range(n_frames):
+            if raw_positions[i] is not None:
+                last = raw_positions[i]
+            else:
+                raw_positions[i] = last
+
+        # Backward-fill leading Nones
+        first = next((p for p in raw_positions if p is not None), (w // 2, h // 2))
+        for i in range(n_frames):
+            if raw_positions[i] == (w // 2, h // 2):
+                raw_positions[i] = first
+            else:
+                break
+
+        # Smooth with rolling average (~0.25 s window) to remove jitter
+        win = max(3, int(fps / 4))
+        smoothed = []
+        for i in range(n_frames):
+            s = max(0, i - win // 2)
+            e = min(n_frames, i + win // 2 + 1)
+            xs = [raw_positions[j][0] for j in range(s, e)]
+            ys = [raw_positions[j][1] for j in range(s, e)]
+            smoothed.append((int(sum(xs) / len(xs)), int(sum(ys) / len(ys))))
+
+        # ── Annotation groups and key-frame anchor positions ──────────────────
         frame_nums = sorted({ann.get("frame", 1) for ann in annotations})
         num_groups = max(frame_nums) if frame_nums else 1
+        skel_fn    = int(skeleton.get("frame", 1)) if skeleton else None
 
-        skel_fn = int(skeleton.get("frame", 1)) if skeleton else None
-
-        group_overlays: dict = {}
+        # Video frame index for each annotation key frame
+        kf_vidx = {}
         for fn in range(1, num_groups + 1):
-            frame_anns = [a for a in annotations if a.get("frame", 1) == fn]
-            if not frame_anns:
-                frame_anns = annotations
-            # Only include skeleton for the frame it was captured in
-            frame_skel = skeleton if (skel_fn is not None and skel_fn == fn) else None
-            group_overlays[fn] = _build_overlay(
-                w, h, frame_anns, scores if fn == num_groups else {},
-                skeleton=frame_skel,
-            )
+            if duration > 0:
+                kf_vidx[fn] = min(int(duration * fn / (num_groups + 1) * fps), n_frames - 1)
+            else:
+                kf_vidx[fn] = min(n_frames * fn // (num_groups + 1), n_frames - 1)
 
-        # ── Time boundaries: switch annotation group at midpoint between key timestamps ──
+        # Player center (smoothed) at each key frame — annotation anchor
+        kf_player = {fn: smoothed[vi] for fn, vi in kf_vidx.items()}
+
+        # Time boundaries for switching annotation groups
         if num_groups > 1 and duration > 0:
             key_times  = [duration * (g + 1) / (num_groups + 1) for g in range(num_groups)]
             boundaries = [0.0]
@@ -1147,7 +1421,7 @@ def create_annotated_video_simple(
                 boundaries.append((key_times[g] + key_times[g + 1]) / 2)
             boundaries.append(duration + 1.0)
         else:
-            boundaries = None  # single static group
+            boundaries = None
 
         def _group_for_frame(i: int) -> int:
             if boundaries is None:
@@ -1158,29 +1432,57 @@ def create_annotated_video_simple(
                     return g + 1
             return num_groups
 
+        # Pre-group annotations
+        group_anns = {}
+        for fn in range(1, num_groups + 1):
+            fa = [a for a in annotations if a.get("frame", 1) == fn]
+            group_anns[fn] = fa if fa else annotations
+
+        # Static overlays built once
+        skeleton_overlay = None
+        if skeleton and skel_fn:
+            try:
+                skeleton_overlay = _draw_skeleton_layer(w, h, skeleton)
+            except Exception:
+                pass
+        score_overlay = _build_score_overlay(w, h, scores) if scores else None
+
         # ── Write annotated frames ────────────────────────────────────────────
         writer = imageio_ffmpeg.write_frames(
             out_path, (w, h),
             pix_fmt_in="rgb24",
             pix_fmt_out="yuv420p",
             fps=fps,
-            quality=6,      # maps to ~CRF 20 for libx264 — good quality
+            quality=6,
             codec="libx264",
             macro_block_size=1,
             output_params=["-movflags", "+faststart"],
         )
-        writer.send(None)   # initialize the generator
+        writer.send(None)
 
-        for i, raw in enumerate(frames):
-            fn      = _group_for_frame(i)
-            overlay = group_overlays.get(fn, group_overlays[1])
-            # Crop raw bytes to even w×h in case source has odd edge pixels
-            img = Image.frombytes("RGB", meta["size"], raw)
-            if img.size != (w, h):
-                img = img.crop((0, 0, w, h))
+        for i, img in enumerate(pil_frames):
+            fn          = _group_for_frame(i)
+            anns        = group_anns.get(fn, group_anns.get(1, []))
+            curr_player = smoothed[i]
+            ref_player  = kf_player.get(fn, (w // 2, h // 2))
+            dx          = curr_player[0] - ref_player[0]
+            dy          = curr_player[1] - ref_player[1]
+
             img_rgba = img.convert("RGBA")
-            result   = Image.alpha_composite(img_rgba, overlay).convert("RGB")
-            writer.send(result.tobytes())
+
+            # Skeleton only for its key frame group
+            if skeleton_overlay and skel_fn and fn == skel_fn:
+                img_rgba = Image.alpha_composite(img_rgba, skeleton_overlay)
+
+            # Tracked annotation overlay (dots/arrows follow player motion)
+            ann_overlay = _build_overlay_tracked(w, h, anns, dx, dy, i)
+            img_rgba    = Image.alpha_composite(img_rgba, ann_overlay)
+
+            # Score panel (always bottom-right, static)
+            if score_overlay:
+                img_rgba = Image.alpha_composite(img_rgba, score_overlay)
+
+            writer.send(img_rgba.convert("RGB").tobytes())
 
         writer.close()
         writer = None
@@ -1191,6 +1493,8 @@ def create_annotated_video_simple(
         return None
 
     except Exception:
+        import traceback
+        traceback.print_exc()
         return None
     finally:
         if writer is not None:
