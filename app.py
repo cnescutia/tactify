@@ -3,29 +3,38 @@ Tactify — AI Soccer Coaching Platform
 Nike/Adidas lab aesthetic: pure black, neon green, bold editorial typography.
 """
 
-import base64
-import html as _html
-import io
-import json as _json
 import os
-import urllib.parse
-import zlib
-from datetime import datetime
+import sys
 
-import anthropic as _anthropic
-import plotly.graph_objects as go
+# ── Streamlit must be imported first so errors can be surfaced in the UI ──────
 import streamlit as st
 import streamlit.components.v1 as st_components
-from dotenv import load_dotenv
 
-from knowledge_base import POSITIONS, PLAY_TYPES, AGE_GROUPS
-from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
-                       generate_comparison_audio, analyze_team_patterns,
-                       merge_audio_into_video, create_annotated_video_simple,
-                       extract_moment_clip)
-from pdf_report import generate_pdf_report
+try:
+    import base64
+    import html as _html
+    import io
+    import json as _json
+    import urllib.parse
+    import zlib
+    from datetime import datetime
 
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
+    import anthropic as _anthropic
+    import plotly.graph_objects as go
+    from dotenv import load_dotenv
+
+    from knowledge_base import POSITIONS, PLAY_TYPES, AGE_GROUPS
+    from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
+                           generate_comparison_audio, analyze_team_patterns,
+                           merge_audio_into_video, create_annotated_video_simple,
+                           extract_moment_clip)
+    from pdf_report import generate_pdf_report
+
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
+
+except Exception as _import_error:
+    st.error(f"**Startup import failed** (Python {sys.version}):\n\n```\n{_import_error}\n```")
+    st.stop()
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
