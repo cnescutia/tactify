@@ -1025,20 +1025,18 @@ with tab_single:
                 label_visibility="collapsed",
             )
             if uploaded_file:
-                file_bytes = uploaded_file.read()
+                # Show a lightweight preview — do NOT read bytes here to avoid memory issues
                 is_video = uploaded_file.type in ("video/mp4", "video/quicktime")
+                file_size_mb = uploaded_file.size / (1024 * 1024)
                 if is_video:
-                    file_size_mb = len(file_bytes) / (1024 * 1024)
-                    if file_size_mb < 10:
-                        st.video(io.BytesIO(file_bytes))
-                    else:
-                        st.markdown(
-                            f'<div style="background:#111;border:1px solid #1e1e1e;border-radius:10px;'
-                            f'padding:16px;color:#00FF87;font-size:13px;">'
-                            f'✓ Video loaded — {file_size_mb:.1f}MB · ready for analysis</div>',
-                            unsafe_allow_html=True,
-                        )
+                    st.markdown(
+                        f'<div style="background:#111;border:1.5px solid #00FF8740;border-radius:10px;'
+                        f'padding:16px 20px;color:#00FF87;font-size:13px;font-weight:700;">'
+                        f'✓ Video ready · {file_size_mb:.1f} MB — click Run Analysis to start</div>',
+                        unsafe_allow_html=True,
+                    )
                 else:
+                    file_bytes = uploaded_file.read()
                     st.image(file_bytes, use_container_width=True)
         else:
             label("Webcam Capture")
@@ -1067,6 +1065,10 @@ with tab_single:
     # ── Results (single session) ───────────────────────────────────────────────
 
     if _has_input and run:
+        # Read file bytes now (deferred from preview to avoid memory issues on upload)
+        if uploaded_file and file_bytes is None:
+            file_bytes = uploaded_file.read()
+
         # Webcam captures are always JPEG images; file uploads can be video
         if webcam_capture:
             is_video   = False
