@@ -1196,12 +1196,27 @@ def analyze_media(
         knowledge=knowledge, num_frames=num_frames,
     )
 
-    # Compress frames to stay under API size limits
-    image_list = [_compress_frame(fb) for fb in image_list]
+    # Compress every frame to JPEG regardless of source format
+    compressed_list = []
+    for fb in image_list:
+        compressed_list.append(_compress_frame(fb))
+    image_list = compressed_list
+
+    # Hard size guard — if total base64 payload still > 12 MB, compress harder
+    total_bytes = sum(len(fb) for fb in image_list)
+    if total_bytes > 12_000_000:
+        image_list = [_compress_frame(fb, max_w=640, max_h=480, quality=55) for fb in image_list]
+        total_bytes = sum(len(fb) for fb in image_list)
+
+    # Absolute limit — if still too large, drop to 2 frames
+    if total_bytes > 10_000_000:
+        image_list = image_list[:2]
+
+    print(f"[tactify] sending {len(image_list)} frames, total size: {sum(len(f) for f in image_list) // 1024}KB")
 
     content = [
         {"type": "image",
-         "source": {"type": "base64", "media_type": media_type, "data": _b64(fb)}}
+         "source": {"type": "base64", "media_type": "image/jpeg", "data": _b64(fb)}}
         for fb in image_list
     ]
     content.append({"type": "text", "text": prompt})
