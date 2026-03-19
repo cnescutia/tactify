@@ -232,18 +232,26 @@ REQUIREMENTS:
 def _b64(data: bytes) -> str:
     return base64.standard_b64encode(data).decode("utf-8")
 
-def _compress_frame(img_bytes: bytes, max_w: int = 1280, max_h: int = 720, quality: int = 82) -> bytes:
+def _compress_frame(img_bytes: bytes, max_w: int = 800, max_h: int = 600, quality: int = 70) -> bytes:
     """Resize + JPEG-compress a frame so it stays under the API size limit."""
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         w, h = img.size
-        if w > max_w or h > max_h:
-            scale = min(max_w / w, max_h / h)
-            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        # Always resize to ensure small payload
+        scale = min(max_w / max(w, 1), max_h / max(h, 1), 1.0)
+        new_w, new_h = int(w * scale), int(h * scale)
+        if new_w != w or new_h != h:
+            img = img.resize((new_w, new_h), Image.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=quality, optimize=True)
-        return buf.getvalue()
+        compressed = buf.getvalue()
+        # If still > 1MB, compress harder
+        if len(compressed) > 1_000_000:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=50, optimize=True)
+            compressed = buf.getvalue()
+        return compressed
     except Exception:
         return img_bytes  # fallback: return original if PIL fails
 
@@ -1173,7 +1181,7 @@ def analyze_media(
     media_type = "image/jpeg"
 
     if is_video:
-        image_list = _extract_frames(file_bytes, 6)
+        image_list = _extract_frames(file_bytes, 4)
         if not image_list:
             return {"success": False, "error": "Could not extract frames from video.",
                     "data": None, "annotated_image": None, "key_frames": [], "frames_analyzed": 0}
