@@ -1028,7 +1028,16 @@ with tab_single:
                 file_bytes = uploaded_file.read()
                 is_video = uploaded_file.type in ("video/mp4", "video/quicktime")
                 if is_video:
-                    st.video(io.BytesIO(file_bytes))
+                    file_size_mb = len(file_bytes) / (1024 * 1024)
+                    if file_size_mb < 10:
+                        st.video(io.BytesIO(file_bytes))
+                    else:
+                        st.markdown(
+                            f'<div style="background:#111;border:1px solid #1e1e1e;border-radius:10px;'
+                            f'padding:16px;color:#00FF87;font-size:13px;">'
+                            f'✓ Video loaded — {file_size_mb:.1f}MB · ready for analysis</div>',
+                            unsafe_allow_html=True,
+                        )
                 else:
                     st.image(file_bytes, use_container_width=True)
         else:
