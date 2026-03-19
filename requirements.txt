@@ -7,6 +7,5 @@ imageio-ffmpeg>=0.4.9
 fpdf2>=2.7.0
 edge-tts>=6.1.9
 plotly>=5.0.0
-opencv-python-headless>=4.8.0
-mediapipe>=0.10.0
+opencv-python-headless==4.9.0.80
 numpy>=1.24.0
