@@ -232,6 +232,22 @@ REQUIREMENTS:
 def _b64(data: bytes) -> str:
     return base64.standard_b64encode(data).decode("utf-8")
 
+def _compress_frame(img_bytes: bytes, max_w: int = 1280, max_h: int = 720, quality: int = 82) -> bytes:
+    """Resize + JPEG-compress a frame so it stays under the API size limit."""
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        w, h = img.size
+        if w > max_w or h > max_h:
+            scale = min(max_w / w, max_h / h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return img_bytes  # fallback: return original if PIL fails
+
+
 
 def _parse_json(text: str) -> dict | None:
     # Strip markdown code fences
@@ -1171,6 +1187,9 @@ def analyze_media(
         age_group=age_group, notes=additional_notes or "None",
         knowledge=knowledge, num_frames=num_frames,
     )
+
+    # Compress frames to stay under API size limits
+    image_list = [_compress_frame(fb) for fb in image_list]
 
     content = [
         {"type": "image",
