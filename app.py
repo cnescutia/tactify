@@ -9,7 +9,12 @@ import sys
 # ── Streamlit must be imported first so errors can be surfaced in the UI ──────
 import streamlit as st
 import streamlit.components.v1 as st_components
-
+st.set_page_config(
+    page_title="Tactify · AI Soccer Coaching",
+    page_icon="⚽",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 try:
     import base64
     import html as _html
@@ -38,12 +43,7 @@ except Exception as _import_error:
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
-st.set_page_config(
-    page_title="Tactify · AI Soccer Coaching",
-    page_icon="⚽",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
 
