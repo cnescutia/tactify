@@ -329,10 +329,11 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
             w, h = meta["size"]
             print(f"[tactify] meta: size={w}x{h} duration={meta.get('duration')}")
 
+            # Cap to num_frames+1 raw frames max to avoid OOM on 4K video
             raw_frames: list[bytes] = []
             for raw in gen:
                 raw_frames.append(raw)
-                if len(raw_frames) >= num_frames * 10:   # cap memory
+                if len(raw_frames) >= num_frames + 1:
                     break
             gen.close()
 
@@ -340,13 +341,19 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
                 n       = len(raw_frames)
                 indices = [int(n * (i + 1) / (num_frames + 1)) for i in range(num_frames)]
                 result  = []
+                # Scale down to max 800x600 before saving to JPEG to save memory
+                MAX_W, MAX_H = 800, 600
+                scale = min(MAX_W / max(w, 1), MAX_H / max(h, 1), 1.0)
+                out_w, out_h = max(int(w * scale), 1), max(int(h * scale), 1)
                 for idx in indices:
                     frame_raw = raw_frames[min(idx, n - 1)]
                     img = _PILImage.frombytes("RGB", (w, h), frame_raw)
+                    if scale < 1.0:
+                        img = img.resize((out_w, out_h), _PILImage.LANCZOS)
                     buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=85)
+                    img.save(buf, format="JPEG", quality=72, optimize=True)
                     result.append(buf.getvalue())
-                print(f"[tactify] strategy-1 extracted {len(result)} frames")
+                print(f"[tactify] strategy-1 extracted {len(result)} frames ({out_w}x{out_h})")
                 return result
         except Exception as e:
             print(f"[tactify] strategy-1 failed: {e}")
@@ -372,8 +379,10 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
             cmd = [ffmpeg_bin, "-y"]
             if ts > 0:
                 cmd += ["-ss", f"{ts:.3f}"]
+            # Scale down to max 800px wide before piping to avoid large PNGs
             cmd += ["-i", path, "-frames:v", "1",
-                    "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
+                    "-vf", "scale='min(800,iw)':-2",
+                    "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5", "pipe:1"]
             r = subprocess.run(cmd, capture_output=True, timeout=30)
             if r.returncode == 0 and len(r.stdout) > 100:
                 result.append(r.stdout)
@@ -388,7 +397,8 @@ def _extract_frames(video_bytes: bytes, num_frames: int = 4) -> list[bytes]:
         # ── Strategy 3: first frame JPEG pipe ────────────────────────────────
         r = subprocess.run(
             [ffmpeg_bin, "-y", "-i", path,
-             "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+             "-frames:v", "1", "-vf", "scale='min(800,iw)':-2",
+             "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5", "pipe:1"],
             capture_output=True, timeout=30,
         )
         if r.returncode == 0 and len(r.stdout) > 100:
