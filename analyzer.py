@@ -35,6 +35,35 @@ def _ffmpeg_exe() -> str | None:
     except Exception:
         return None
 
+def _downscale_video(video_bytes: bytes, max_height: int = 720) -> bytes:
+    """Downscale video to max_height using ffmpeg. Returns original bytes on failure."""
+    import subprocess, tempfile, os
+    ffmpeg = _ffmpeg_exe()
+    if not ffmpeg:
+        return video_bytes
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as inp:
+            inp.write(video_bytes)
+            inp_path = inp.name
+        out_path = inp_path.replace('.mp4', '_scaled.mp4')
+        r = subprocess.run([
+            ffmpeg, '-y', '-i', inp_path,
+            '-vf', f'scale=-2:{max_height}',
+            '-c:v', 'libx264', '-crf', '23', '-preset', 'fast',
+            '-c:a', 'copy', out_path
+        ], capture_output=True, timeout=60)
+        if r.returncode == 0:
+            with open(out_path, 'rb') as f:
+                result = f.read()
+            return result if len(result) > 1000 else video_bytes
+        return video_bytes
+    except Exception:
+        return video_bytes
+    finally:
+        for p in [inp_path, out_path]:
+            try: os.unlink(p)
+            except: pass
+
 # ── MediaPipe landmark index map ───────────────────────────────────────────────
 # Indices are stable across MediaPipe versions (no import needed at module level)
 _REGION_LANDMARKS = {

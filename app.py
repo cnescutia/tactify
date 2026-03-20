@@ -1134,17 +1134,18 @@ with tab_single:
         num_kf      = len(result.get("key_frames", [])) or 4
         if is_video:
             try:
-                # Skip annotation for large videos (>10MB) to avoid OOM
                 _video_size_mb = len(file_bytes) / (1024 * 1024)
-                if _video_size_mb <= 10:
-                    _prog.progress(60, text="🎬  Rendering coaching overlay on video…")
-                    annotated_video = create_annotated_video_simple(
-                        file_bytes, annotations, scores,
-                        skeleton=data.get("skeleton"),
-                    )
-                else:
-                    _prog.progress(60, text="🎬  Video ready (annotation skipped for large files)…")
-                    annotated_video = file_bytes
+                # Downscale large videos to 720p before annotation to prevent OOM
+                _annotate_bytes = file_bytes
+                if _video_size_mb > 10:
+                    _prog.progress(55, text="📐  Downscaling 4K video to 720p for annotation…")
+                    from analyzer import _downscale_video
+                    _annotate_bytes = _downscale_video(file_bytes, max_height=720)
+                _prog.progress(60, text="🎬  Rendering coaching overlay on video…")
+                annotated_video = create_annotated_video_simple(
+                    _annotate_bytes, annotations, scores,
+                    skeleton=data.get("skeleton"),
+                )
                 base_video = annotated_video if annotated_video else file_bytes
                 if audio_bytes:
                     _prog.progress(75, text="🔊  Merging coaching audio into video…")
@@ -1159,15 +1160,12 @@ with tab_single:
             # ── Extract best / worst moment clips (skip for large videos) ──
             best_fn  = data.get("best_moment",  {}).get("frame", 1)
             worst_fn = data.get("worst_moment", {}).get("frame", 1)
-            if _video_size_mb <= 10:
-                try:
-                    _prog.progress(88, text="✂️  Extracting key moment clips…")
-                    best_clip  = extract_moment_clip(file_bytes, best_fn,  num_kf)
-                    worst_clip = extract_moment_clip(file_bytes, worst_fn, num_kf)
-                except Exception:
-                    pass
-            else:
-                _prog.progress(88, text="✅  Skipping clip extraction for large video…")
+            try:
+                _prog.progress(88, text="✂️  Extracting key moment clips…")
+                best_clip  = extract_moment_clip(_annotate_bytes, best_fn,  num_kf)
+                worst_clip = extract_moment_clip(_annotate_bytes, worst_fn, num_kf)
+            except Exception:
+                pass
 
         _prog.progress(100, text="✅  Analysis complete!")
         _prog.empty()
