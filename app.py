@@ -1058,7 +1058,6 @@ with tab_single:
                                   placeholder="e.g. right-footed striker, focus on off-ball movement…")
         gap(10)
         _has_input = bool(uploaded_file or webcam_capture)
-        st.caption(f"DEBUG: file={uploaded_file is not None} | webcam={webcam_capture is not None} | has_input={_has_input}")
         run = st.button("Run Analysis ▶", use_container_width=True, disabled=not _has_input)
 
     st.markdown('<hr>', unsafe_allow_html=True)
