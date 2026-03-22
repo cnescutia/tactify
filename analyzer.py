@@ -1773,6 +1773,103 @@ def generate_coaching_audio(data: dict, position: str) -> bytes | None:
     return _tts_edge(script) or _tts_gtts(script)
 
 
+def generate_training_plan(data: dict, position: str, age_group: str) -> dict | None:
+    """
+    Generate a personalised 7-day training plan based on analysis data.
+    Returns a dict with week_goal and days list, or None on failure.
+    """
+    client = anthropic.Anthropic()
+    scores = data.get("scores", {})
+    priority_fix = data.get("priority_fix", "")
+    fix_cards = data.get("fix_cards", [])
+
+    prompt = f"""You are an expert soccer coach. Based on the following player analysis, create a personalised 7-day training plan targeting the player's weakest areas.
+
+Player position: {position}
+Age group: {age_group}
+Scores: {json.dumps(scores)}
+Priority fix: {priority_fix}
+Fix cards: {json.dumps(fix_cards)}
+
+Return ONLY valid JSON (no markdown fences) with this exact structure:
+{{
+  "week_goal": "One sentence goal for the week",
+  "days": [
+    {{
+      "day": "Monday",
+      "focus": "Short focus label",
+      "duration": "45 min",
+      "drills": [
+        {{"name": "Drill name", "duration": "10 min", "reps": "3x10", "description": "How to do it"}}
+      ],
+      "rest": false
+    }},
+    {{
+      "day": "Tuesday",
+      "focus": "Short focus label",
+      "duration": "45 min",
+      "drills": [
+        {{"name": "Drill name", "duration": "10 min", "reps": "3x10", "description": "How to do it"}}
+      ],
+      "rest": false
+    }},
+    {{
+      "day": "Wednesday",
+      "focus": "Rest",
+      "duration": "0 min",
+      "drills": [],
+      "rest": true
+    }},
+    {{
+      "day": "Thursday",
+      "focus": "Short focus label",
+      "duration": "45 min",
+      "drills": [
+        {{"name": "Drill name", "duration": "10 min", "reps": "3x10", "description": "How to do it"}}
+      ],
+      "rest": false
+    }},
+    {{
+      "day": "Friday",
+      "focus": "Short focus label",
+      "duration": "45 min",
+      "drills": [
+        {{"name": "Drill name", "duration": "10 min", "reps": "3x10", "description": "How to do it"}}
+      ],
+      "rest": false
+    }},
+    {{
+      "day": "Saturday",
+      "focus": "Short focus label",
+      "duration": "60 min",
+      "drills": [
+        {{"name": "Drill name", "duration": "15 min", "reps": "4x10", "description": "How to do it"}}
+      ],
+      "rest": false
+    }},
+    {{
+      "day": "Sunday",
+      "focus": "Rest",
+      "duration": "0 min",
+      "drills": [],
+      "rest": true
+    }}
+  ]
+}}
+
+Tailor all drills specifically to the player's weakest areas identified in the scores and priority fix. Include 2-4 drills per active day."""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return _parse_json(response.content[0].text)
+    except Exception:
+        return None
+
+
 # ── Session Comparison (Before / After) ───────────────────────────────────────
 
 _COMPARISON_PROMPT = """

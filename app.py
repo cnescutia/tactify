@@ -29,7 +29,8 @@ try:
     from dotenv import load_dotenv
 
     from knowledge_base import POSITIONS, PLAY_TYPES, AGE_GROUPS
-    from analyzer import (analyze_media, generate_coaching_audio, compare_sessions,
+    from analyzer import (analyze_media, generate_coaching_audio, generate_training_plan,
+                           compare_sessions,
                            generate_comparison_audio, analyze_team_patterns,
                            merge_audio_into_video, create_annotated_video_simple,
                            extract_moment_clip)
@@ -991,6 +992,8 @@ if "coach_messages" not in st.session_state:
     st.session_state.coach_messages = []
 if "coach_context" not in st.session_state:
     st.session_state.coach_context = None
+if "demo_active" not in st.session_state:
+    st.session_state.demo_active = False
 
 # ── Mode Tabs ─────────────────────────────────────────────────────────────────
 
@@ -1001,6 +1004,20 @@ tab_single, tab_compare, tab_team = st.tabs(["Single Session", "Before / After C
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_single:
+    # Demo mode button
+    _demo_col, _ = st.columns([1, 3])
+    with _demo_col:
+        _demo_mode = st.button("▶ Try Demo (no upload needed)", use_container_width=True)
+    if _demo_mode:
+        st.session_state["demo_active"] = True
+    if st.session_state.get("demo_active"):
+        st.markdown("""
+        <div style="background:#00FF8710;border:1.5px solid #00FF8740;border-radius:12px;padding:16px 24px;margin-bottom:20px;">
+            <div style="color:#00FF87;font-size:11px;letter-spacing:3px;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Demo Mode Active</div>
+            <div style="color:#888;font-size:13px;">Showing a pre-analysed session. Upload your own footage to run a live analysis.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
     col_up, col_ctx = st.columns([1.5, 1], gap="large")
 
     with col_up:
@@ -1087,7 +1104,7 @@ with tab_single:
         _prog = st.progress(0, text="⚽  Initializing AI analysis engine…")
 
         # ── Step 1: Claude analysis ────────────────────────────────────────────
-        _prog.progress(10, text="🧠  Claude Vision analyzing footage…")
+        _prog.progress(10, text="⚽  Feeding footage to Claude Vision AI…")
         result = analyze_media(
             file_bytes=file_bytes,
             file_type=file_type,
@@ -1120,7 +1137,7 @@ with tab_single:
         st.session_state.coach_context = data
 
         # ── Step 2: Coaching audio ────────────────────────────────────────────
-        _prog.progress(45, text="🎙  Generating neural coaching voice…")
+        _prog.progress(45, text="🎙  Generating expert coaching voice…")
         try:
             audio_bytes = generate_coaching_audio(data, position)
         except Exception as _ae:
@@ -1138,17 +1155,17 @@ with tab_single:
                 # Downscale large videos to 720p before annotation to prevent OOM
                 _annotate_bytes = file_bytes
                 if _video_size_mb > 10:
-                    _prog.progress(55, text="📐  Downscaling 4K video to 720p for annotation…")
+                    _prog.progress(55, text="📐  Optimising video resolution…")
                     from analyzer import _downscale_video
                     _annotate_bytes = _downscale_video(file_bytes, max_height=720)
-                _prog.progress(60, text="🎬  Rendering coaching overlay on video…")
+                _prog.progress(60, text="🎬  Painting coaching overlay frame by frame…")
                 annotated_video = create_annotated_video_simple(
                     _annotate_bytes, annotations, scores,
                     skeleton=data.get("skeleton"),
                 )
                 base_video = annotated_video if annotated_video else file_bytes
                 if audio_bytes:
-                    _prog.progress(75, text="🔊  Merging coaching audio into video…")
+                    _prog.progress(75, text="🔊  Syncing coaching audio to video…")
                     merged = merge_audio_into_video(base_video, audio_bytes)
                     final_video = merged if merged else base_video
                 else:
@@ -1161,13 +1178,13 @@ with tab_single:
             best_fn  = data.get("best_moment",  {}).get("frame", 1)
             worst_fn = data.get("worst_moment", {}).get("frame", 1)
             try:
-                _prog.progress(88, text="✂️  Extracting key moment clips…")
+                _prog.progress(88, text="✂️  Cutting best & worst moment clips…")
                 best_clip  = extract_moment_clip(_annotate_bytes, best_fn,  num_kf)
                 worst_clip = extract_moment_clip(_annotate_bytes, worst_fn, num_kf)
             except Exception:
                 pass
 
-        _prog.progress(100, text="✅  Analysis complete!")
+        _prog.progress(100, text="🏆  Analysis complete — let's get to work!")
         _prog.empty()
 
         # ── Summary banner ─────────────────────────────────────────────────────
@@ -1375,6 +1392,38 @@ with tab_single:
             label("Professional Reference")
             render_pro_reference(data["pro_reference"])
 
+        # ── 7-Day Training Plan ────────────────────────────────────────────────────
+        gap(32)
+        label("7-Day Training Plan")
+        with st.spinner("Building your personalised training week…"):
+            _plan = generate_training_plan(data, position, age_group)
+        if _plan:
+            st.markdown(f"""
+            <div style="background:#00FF8710;border:1.5px solid #00FF8740;border-radius:14px;padding:20px 26px;margin-bottom:20px;">
+                <div style="color:#00FF87;font-size:10px;letter-spacing:3px;text-transform:uppercase;font-weight:700;margin-bottom:6px;">Week Goal</div>
+                <div style="color:#fff;font-size:16px;font-weight:800;">{e(_plan.get('week_goal',''))}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            _day_cols = st.columns(7, gap="small")
+            _day_colors = {{"rest": "#1a1a1a", "active": "#111"}}
+            for _dc, _day in zip(_day_cols, _plan.get("days", [])):
+                with _dc:
+                    _is_rest = _day.get("rest", False)
+                    _border = "#333" if _is_rest else "#00FF8740"
+                    _drills_html = "".join(
+                        f'<div style="color:#888;font-size:10px;padding:3px 0;border-bottom:1px solid #1a1a1a;">'
+                        f'⚡ {e(d.get("name",""))}<br>'
+                        f'<span style="color:#555">{e(d.get("duration",""))}</span></div>'
+                        for d in _day.get("drills", [])[:3]
+                    )
+                    st.markdown(f"""
+                    <div style="background:#111;border:1.5px solid {_border};border-radius:10px;padding:12px 10px;min-height:160px;">
+                        <div style="color:#00FF87;font-size:9px;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:4px;">{e(_day.get('day',''))}</div>
+                        <div style="color:{'#444' if _is_rest else '#fff'};font-size:11px;font-weight:700;margin-bottom:6px;">{'Rest' if _is_rest else e(_day.get('focus',''))}</div>
+                        {'<div style="color:#444;font-size:11px;">Recovery day</div>' if _is_rest else _drills_html}
+                    </div>
+                    """, unsafe_allow_html=True)
+
         # ── Share link ─────────────────────────────────────────────────────────
         gap(32)
         label("Share This Report")
@@ -1413,7 +1462,7 @@ with tab_single:
         # ── Downloads ──────────────────────────────────────────────────────────
         gap(24)
         label("Downloads")
-        dl_cols = st.columns([1, 1, 1, 1, 1])
+        dl_cols = st.columns([1, 1, 1, 1])
 
         # PDF scouting report (primary download)
         with dl_cols[0]:
@@ -1439,16 +1488,8 @@ with tab_single:
                     mime="text/html",
                 )
 
-        with dl_cols[1]:
-            st.download_button(
-                "⬇ Raw Data (JSON)",
-                data=_json.dumps(data, indent=2),
-                file_name=f"tactify_{_fname_stem}.json",
-                mime="application/json",
-            )
-
         # Stat card PNG download
-        with dl_cols[2]:
+        with dl_cols[1]:
             _card_png = generate_stat_card_png(scores, position, age_group, data.get("summary", ""))
             if _card_png:
                 st.download_button(
@@ -1459,7 +1500,7 @@ with tab_single:
                 )
 
         if is_video and final_video:
-            with dl_cols[3]:
+            with dl_cols[2]:
                 st.download_button(
                     "⬇ Coaching Video",
                     data=final_video,
@@ -1467,7 +1508,7 @@ with tab_single:
                     mime="video/mp4",
                 )
         if audio_bytes:
-            with dl_cols[4]:
+            with dl_cols[3]:
                 st.download_button(
                     "⬇ Coaching Audio",
                     data=audio_bytes,
@@ -1479,6 +1520,29 @@ with tab_single:
         if len(st.session_state.history) > 1:
             gap(40)
             label("Progress Tracker · Session History")
+            # Streak badge
+            _streak = len(st.session_state.history)
+            _latest_avg = round(sum(st.session_state.history[-1]["scores"].get(k,5) for k in ["technique","body_position","spatial_awareness","decision_making","effort"])/5,1) if st.session_state.history else 0
+            _prev_avg = round(sum(st.session_state.history[-2]["scores"].get(k,5) for k in ["technique","body_position","spatial_awareness","decision_making","effort"])/5,1) if len(st.session_state.history)>1 else 0
+            _trend = "📈" if _latest_avg > _prev_avg else "📉" if _latest_avg < _prev_avg else "➡️"
+            st.markdown(f"""
+<div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap;">
+    <div style="background:#111;border:1.5px solid #00FF8740;border-radius:10px;padding:12px 20px;display:flex;align-items:center;gap:10px;">
+        <span style="font-size:24px;">🔥</span>
+        <div>
+            <div style="color:#00FF87;font-size:18px;font-weight:900;">{_streak} Session{'s' if _streak!=1 else ''}</div>
+            <div style="color:#444;font-size:10px;letter-spacing:2px;text-transform:uppercase;">Streak</div>
+        </div>
+    </div>
+    <div style="background:#111;border:1.5px solid #1e1e1e;border-radius:10px;padding:12px 20px;display:flex;align-items:center;gap:10px;">
+        <span style="font-size:24px;">{_trend}</span>
+        <div>
+            <div style="color:#fff;font-size:18px;font-weight:900;">{_latest_avg}</div>
+            <div style="color:#444;font-size:10px;letter-spacing:2px;text-transform:uppercase;">Latest Avg</div>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
             _hist = st.session_state.history
             _categories = [
                 ("Technique",         "technique"),
@@ -1869,247 +1933,22 @@ with tab_compare:
 
 with tab_team:
     st.markdown("""
-    <div style="color:#555;font-size:13px;line-height:1.7;margin-bottom:24px;">
-        Upload clips for up to 5 players. Tactify will analyse each one individually,
-        then identify the systemic weaknesses and strengths across your squad —
-        and prescribe a single team drill to address the biggest gap.
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
+                padding:80px 40px;text-align:center;">
+        <div style="font-size:48px;margin-bottom:24px;">🏟️</div>
+        <div style="color:#fff;font-size:28px;font-weight:900;letter-spacing:-0.5px;margin-bottom:12px;">
+            Team Dashboard
+        </div>
+        <div style="color:#333;font-size:14px;max-width:400px;line-height:1.7;margin-bottom:32px;">
+            Analyse your full squad, spot systemic weaknesses, and get a team drill targeting your biggest gap.
+        </div>
+        <div style="background:#00FF8720;border:1.5px solid #00FF8760;border-radius:100px;
+                    padding:10px 28px;color:#00FF87;font-size:12px;font-weight:700;letter-spacing:2px;
+                    text-transform:uppercase;">
+            Coming Soon
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Shared context
-    tm_ctx = st.columns(3, gap="medium")
-    with tm_ctx[0]:
-        label("Play Type")
-        tm_play = st.selectbox("tm_play", PLAY_TYPES, index=8, label_visibility="collapsed", key="tm_play")
-    with tm_ctx[1]:
-        label("Age Group")
-        tm_age  = st.selectbox("tm_age",  AGE_GROUPS, index=3, label_visibility="collapsed", key="tm_age")
-    with tm_ctx[2]:
-        label("Number of Players")
-        tm_n    = st.selectbox("tm_n", [2, 3, 4, 5], index=1, label_visibility="collapsed", key="tm_n")
-
-    gap(20)
-
-    # Player slots
-    SCORE_CATS = ["technique", "body_position", "spatial_awareness", "decision_making", "effort"]
-    CAT_LABELS = ["Technique", "Body Position", "Spatial Awareness", "Decision Making", "Effort"]
-
-    tm_slots = []
-    slot_cols = st.columns(min(tm_n, 3), gap="medium")
-    extra_cols = st.columns(tm_n - 3, gap="medium") if tm_n > 3 else []
-    all_slot_cols = list(slot_cols) + list(extra_cols)
-
-    for i in range(tm_n):
-        with all_slot_cols[i]:
-            pname = st.text_input(f"Player name", value=f"Player {i+1}",
-                                  label_visibility="visible", key=f"tm_name_{i}")
-            ppos  = st.selectbox("Position", POSITIONS, index=6,
-                                  label_visibility="collapsed", key=f"tm_pos_{i}")
-            pfile = st.file_uploader("Upload footage", type=["jpg","jpeg","png","mp4","mov"],
-                                      label_visibility="collapsed", key=f"tm_file_{i}")
-            if pfile:
-                pb = pfile.read()
-                if pfile.type in ("video/mp4","video/quicktime"):
-                    st.video(io.BytesIO(pb))
-                else:
-                    st.image(pb, use_container_width=True)
-                tm_slots.append({"name": pname, "position": ppos,
-                                  "file": pfile, "bytes": pb})
-
-    gap(16)
-    enough = len(tm_slots) >= 2
-    run_team = st.button("Analyze Squad ▶", use_container_width=True,
-                          disabled=not enough, key="run_team")
-    if not enough and tm_n > len(tm_slots):
-        st.caption(f"Upload at least 2 player clips to run team analysis ({len(tm_slots)}/{tm_n} uploaded)")
-
-    st.markdown('<hr>', unsafe_allow_html=True)
-
-    if enough and run_team:
-        # Analyse each player
-        player_results = []
-        prog = st.progress(0.0, text=f"Analysing {tm_slots[0]['name']}…")
-        for idx, slot in enumerate(tm_slots):
-            prog.progress((idx) / len(tm_slots), text=f"Analysing {slot['name']}… ({idx+1}/{len(tm_slots)})")
-            with st.spinner(f"Analysing {slot['name']}…"):
-                res = analyze_media(
-                    file_bytes=slot["bytes"],
-                    file_type=slot["file"].type,
-                    position=slot["position"],
-                    play_type=tm_play,
-                    age_group=tm_age,
-                )
-            if res["success"]:
-                player_results.append({"name": slot["name"], "data": res["data"]})
-        prog.progress(1.0, text="Building team report…")
-
-        with st.spinner("Identifying squad patterns…"):
-            team_report = analyze_team_patterns(player_results)
-        prog.empty()
-
-        if not team_report:
-            st.error("Could not generate team report. Please try again.")
-            st.stop()
-
-        # ── Team headline ──────────────────────────────────────────────────────
-        st.markdown(f"""
-        <div style="border-left:3px solid #00FF87;padding:16px 24px;
-                    background:#00FF870a;border-radius:0 10px 10px 0;margin-bottom:32px;">
-            <div style="color:#00FF87;font-size:10px;letter-spacing:3px;
-                        text-transform:uppercase;font-weight:700;margin-bottom:6px;">
-                Squad Assessment · {len(player_results)} Players
-            </div>
-            <div style="color:#ddd;font-size:15px;line-height:1.6;font-style:italic;">
-                "{e(team_report.get('team_headline',''))}"
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # ── Score heatmap ──────────────────────────────────────────────────────
-        label("Squad Score Heatmap")
-        # Build category averages
-        cat_avgs = {}
-        for cat in SCORE_CATS:
-            vals = [pr["data"].get("scores", {}).get(cat, 5) for pr in player_results]
-            cat_avgs[cat] = round(sum(vals) / len(vals), 1)
-
-        # Header row
-        header_cells = "".join(
-            f'<div style="color:#444;font-size:9px;letter-spacing:1.5px;text-transform:uppercase;'
-            f'font-weight:700;text-align:center;padding:6px 4px;">{lbl}</div>'
-            for lbl in CAT_LABELS
-        )
-        st.markdown(f"""
-        <div style="background:#111;border:1.5px solid #1e1e1e;border-radius:14px;
-                    padding:20px 24px;overflow-x:auto;">
-            <div style="display:grid;grid-template-columns:120px repeat(5,1fr);gap:4px;min-width:600px;">
-                <div></div>{header_cells}
-        """, unsafe_allow_html=True)
-
-        # Player rows
-        for pr in player_results:
-            sc = pr["data"].get("scores", {})
-            name_cell = f'<div style="color:#666;font-size:12px;font-weight:600;padding:8px 4px;display:flex;align-items:center;">{e(pr["name"])}</div>'
-            score_cells = ""
-            for cat in SCORE_CATS:
-                v  = sc.get(cat, 5)
-                c  = score_color(v)
-                score_cells += f"""
-                <div style="background:{c}18;border:1px solid {c}40;border-radius:6px;
-                            padding:8px 4px;text-align:center;">
-                    <div style="color:{c};font-size:16px;font-weight:900;">{v}</div>
-                </div>"""
-            st.markdown(f'<div style="display:contents;">{name_cell}{score_cells}</div>',
-                        unsafe_allow_html=True)
-
-        # Team average row
-        avg_cells = "".join(
-            f'<div style="border-top:1px solid #2a2a2a;padding:10px 4px;text-align:center;">'
-            f'<div style="color:#fff;font-size:14px;font-weight:900;">{cat_avgs[cat]}</div>'
-            f'<div style="color:#333;font-size:9px;text-transform:uppercase;letter-spacing:1px;">avg</div></div>'
-            for cat in SCORE_CATS
-        )
-        st.markdown(f"""
-            <div style="display:contents;">
-                <div style="border-top:1px solid #2a2a2a;padding:10px 4px;
-                            color:#444;font-size:10px;letter-spacing:2px;
-                            text-transform:uppercase;font-weight:700;display:flex;align-items:center;">
-                    Team Avg
-                </div>
-                {avg_cells}
-            </div>
-            </div></div>
-        """, unsafe_allow_html=True)
-
-        # ── Systemic issues + strengths ────────────────────────────────────────
-        gap(32)
-        col_iss, col_str = st.columns(2, gap="medium")
-
-        with col_iss:
-            label("Systemic Issues")
-            st.markdown('<div style="background:#111;border:1.5px solid #FF444430;border-radius:14px;padding:22px;">', unsafe_allow_html=True)
-            for issue in team_report.get("systemic_issues", []):
-                st.markdown(f'<div style="color:#bbb;font-size:13px;line-height:1.6;padding:9px 0;border-bottom:1px solid #1a1a1a;display:flex;gap:10px;"><span style="color:#FF4444;flex-shrink:0;margin-top:1px;">✗</span>{e(issue)}</div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with col_str:
-            label("Squad Strengths")
-            st.markdown('<div style="background:#111;border:1.5px solid #00FF8730;border-radius:14px;padding:22px;">', unsafe_allow_html=True)
-            for strength in team_report.get("team_strengths", []):
-                st.markdown(f'<div style="color:#bbb;font-size:13px;line-height:1.6;padding:9px 0;border-bottom:1px solid #1a1a1a;display:flex;gap:10px;"><span style="color:#00FF87;flex-shrink:0;margin-top:1px;">✓</span>{e(strength)}</div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        # ── Recommended team drill ─────────────────────────────────────────────
-        td = team_report.get("recommended_team_drill", {})
-        if td:
-            gap(32)
-            label("Recommended Team Drill")
-            st.markdown(f"""
-            <div style="background:linear-gradient(135deg,#00FF8710,#00FF8705);
-                        border:1.5px solid #00FF8740;border-radius:16px;padding:28px 32px;">
-                <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
-                    <div style="color:#fff;font-size:18px;font-weight:900;">{e(td.get('name',''))}</div>
-                    <span style="color:#00FF87;background:#00FF8715;border-radius:100px;
-                                 padding:3px 12px;font-size:11px;font-weight:700;">⏱ {e(td.get('duration',''))}</span>
-                    <span style="color:#444;background:#1a1a1a;border-radius:100px;
-                                 padding:3px 12px;font-size:11px;">Targets: {e(team_report.get('weakest_category','').replace('_',' ').title())}</span>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;">
-                    <div>
-                        <div style="color:#444;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:6px;">Setup</div>
-                        <div style="color:#999;font-size:13px;line-height:1.6;">{e(td.get('setup',''))}</div>
-                    </div>
-                    <div>
-                        <div style="color:#444;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:6px;">Focus</div>
-                        <div style="color:#999;font-size:13px;line-height:1.6;">{e(td.get('focus',''))}</div>
-                    </div>
-                    <div>
-                        <div style="color:#00FF87;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:6px;">You know it's working when</div>
-                        <div style="color:#999;font-size:13px;line-height:1.6;">{e(td.get('know_its_working',''))}</div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # ── Individual player cards ────────────────────────────────────────────
-        gap(32)
-        label("Individual Player Notes")
-        notes = team_report.get("individual_notes", [])
-        p_cols = st.columns(min(len(notes), 3), gap="medium")
-        for i, (col, note) in enumerate(zip(p_cols * 2, notes[:5])):
-            with col:
-                pname = e(note.get("player", f"Player {i+1}"))
-                sc    = player_results[i]["data"].get("scores", {}) if i < len(player_results) else {}
-                vals  = [sc.get(k, 5) for k in SCORE_CATS]
-                avg   = round(sum(vals) / max(len(vals), 1), 1)
-                oc    = score_color(avg)
-                st.markdown(f"""
-                <div style="background:#111;border:1.5px solid #1e1e1e;border-radius:14px;padding:20px;">
-                    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
-                        <div style="color:#fff;font-weight:800;font-size:15px;">{pname}</div>
-                        <div style="font-size:26px;font-weight:900;color:{oc};line-height:1;">{avg}</div>
-                    </div>
-                    <div style="margin-bottom:10px;">
-                        <div style="color:#00FF87;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:4px;">Top Strength</div>
-                        <div style="color:#888;font-size:12px;line-height:1.5;">{e(note.get('top_strength',''))}</div>
-                    </div>
-                    <div>
-                        <div style="color:#FF4444;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:4px;">Priority Fix</div>
-                        <div style="color:#888;font-size:12px;line-height:1.5;">{e(note.get('priority_fix',''))}</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-    elif not enough:
-        st.markdown("""
-        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
-                    height:200px;background:#111;border:1.5px dashed #1e1e1e;border-radius:14px;
-                    text-align:center;padding:40px;">
-            <div style="font-size:28px;margin-bottom:12px;opacity:0.2;">◎ ◎ ◎</div>
-            <div style="color:#333;font-size:14px;font-weight:600;">
-                Upload at least 2 player clips to run team analysis
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
 
 
