@@ -64,6 +64,51 @@ def _downscale_video(video_bytes: bytes, max_height: int = 720) -> bytes:
             try: os.unlink(p)
             except: pass
 
+
+def _locate_player_joints(frame_bytes: bytes) -> dict:
+    """Fast dedicated Claude Haiku call to precisely locate player joints in ONE frame.
+    Returns dict with 'joints' key mapping joint names to {x, y} fractions, or {} on failure."""
+    try:
+        import base64 as _base64, re as _re, json as _json
+        client = anthropic.Anthropic()
+        b64 = _base64.standard_b64encode(frame_bytes).decode()
+        prompt = (
+            "You are a precise pose estimation system. ONE task only: locate the soccer player's "
+            "body joints in this image as (x,y) fractions of image width/height.\n\n"
+            "RULES:\n"
+            "- x=0.0 = left edge, x=1.0 = right edge\n"
+            "- y=0.0 = top edge, y=1.0 = bottom edge\n"
+            "- BE PRECISE. If the player stands left of centre, head x should be ~0.25, NOT 0.5.\n"
+            "- If a joint is hidden or out of frame, use -1 for both x and y.\n"
+            "- Focus on the PRIMARY player only. Ignore background players.\n\n"
+            "Return ONLY valid JSON, no other text:\n"
+            '{"player_found": true, "joints": {'
+            '"head": {"x": 0.0, "y": 0.0}, '
+            '"left_shoulder": {"x": 0.0, "y": 0.0}, "right_shoulder": {"x": 0.0, "y": 0.0}, '
+            '"left_elbow": {"x": 0.0, "y": 0.0}, "right_elbow": {"x": 0.0, "y": 0.0}, '
+            '"left_wrist": {"x": 0.0, "y": 0.0}, "right_wrist": {"x": 0.0, "y": 0.0}, '
+            '"left_hip": {"x": 0.0, "y": 0.0}, "right_hip": {"x": 0.0, "y": 0.0}, '
+            '"left_knee": {"x": 0.0, "y": 0.0}, "right_knee": {"x": 0.0, "y": 0.0}, '
+            '"left_ankle": {"x": 0.0, "y": 0.0}, "right_ankle": {"x": 0.0, "y": 0.0}'
+            '}}'
+        )
+        resp = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=400,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                {"type": "text", "text": prompt},
+            ]}],
+        )
+        text = resp.content[0].text.strip()
+        m = _re.search(r'\{.*\}', text, _re.DOTALL)
+        if m:
+            return _json.loads(m.group())
+    except Exception:
+        pass
+    return {}
+
+
 # ── MediaPipe landmark index map ───────────────────────────────────────────────
 # Indices are stable across MediaPipe versions (no import needed at module level)
 _REGION_LANDMARKS = {
@@ -1251,6 +1296,8 @@ def analyze_media(
     play_type: str,
     age_group: str,
     additional_notes: str = "",
+    coaching_persona: str = "⚽ Expert Coach (Default)",
+    output_language: str = "🇬🇧 English",
 ) -> dict:
     """
     Send key frames to Claude, return structured JSON + annotated key frames.
@@ -1302,12 +1349,57 @@ def analyze_media(
 
     print(f"[tactify] sending {len(image_list)} frames, total size: {sum(len(f) for f in image_list) // 1024}KB")
 
+    # Precise joint detection per frame using dedicated Haiku call
+    _frame_joints: dict[int, dict] = {}  # frame_idx -> joints dict
+    for _fi, _fb in enumerate(image_list[:4]):  # max 4 frames to keep cost low
+        _jdata = _locate_player_joints(_fb)
+        if _jdata.get("player_found") and _jdata.get("joints"):
+            _frame_joints[_fi] = _jdata["joints"]
+
+    _persona_instructions = {
+        "🔴 Jürgen Klopp — Intense & Emotional": (
+            "COACHING PERSONA — Jürgen Klopp: You are passionate, intense, and emotionally connected to the player's journey. "
+            "Use energetic language. Reference pressing, intensity, and collective effort. "
+            "Celebrate strengths with genuine excitement ('That first touch — unbelievable!'). "
+            "Frame errors as opportunities with energy ('This is where we get better together!'). "
+            "Keep the language direct, punchy, and motivational. Use short powerful sentences."
+        ),
+        "🔵 Pep Guardiola — Tactical & Positional": (
+            "COACHING PERSONA — Pep Guardiola: You are meticulous, positional, and obsessed with the details of space and timing. "
+            "Focus on body orientation, positioning between lines, and the relationship between the player and space around them. "
+            "Reference concepts like 'half-spaces', 'third man runs', 'pressing triggers', 'positional superiority'. "
+            "Be precise and intellectual — explain WHY each position matters tactically. "
+            "Tone: calm, serious, deeply analytical."
+        ),
+        "⚫ José Mourinho — Direct & Results-Focused": (
+            "COACHING PERSONA — José Mourinho: You are pragmatic, direct, and focused entirely on winning. "
+            "Cut straight to what costs points and what wins games. No sentiment — only results. "
+            "Be blunt about errors ('This mistake costs you the goal. Fix it or you don't play.'). "
+            "Praise only when it directly impacts the result. "
+            "Reference defensive organisation, game management, and clinical execution. "
+            "Tone: confident, authoritative, no-nonsense."
+        ),
+    }
+    _persona_text = _persona_instructions.get(coaching_persona, "")
+
+    _lang_map = {
+        "🇪🇸 Spanish": "Spanish", "🇧🇷 Portuguese": "Portuguese (Brazilian)",
+        "🇫🇷 French": "French", "🇩🇪 German": "German", "🇮🇹 Italian": "Italian",
+    }
+    _lang_name = next((v for k, v in _lang_map.items() if k in output_language), None)
+    _lang_instruction = (
+        f"\n\nCRITICAL: Write ALL coaching text (summary, notes, labels, cues, drill descriptions, "
+        f"strengths, fix cards, pro reference note) in {_lang_name}. "
+        f"JSON keys must stay in English. Only the VALUES of coaching text fields should be translated."
+    ) if _lang_name else ""
+
     content = [
         {"type": "image",
          "source": {"type": "base64", "media_type": "image/jpeg", "data": _b64(fb)}}
         for fb in image_list
     ]
-    content.append({"type": "text", "text": prompt})
+    _full_prompt = prompt + ("\n\n" + _persona_text if _persona_text else "") + _lang_instruction
+    content.append({"type": "text", "text": _full_prompt})
 
     try:
         response = client.messages.create(
@@ -1319,6 +1411,38 @@ def analyze_media(
         if data is None:
             return {"success": False, "error": "Could not parse AI response. Please try again.",
                     "data": None, "annotated_image": None, "key_frames": [], "frames_analyzed": len(image_list)}
+
+        # Patch annotation coordinates with precise joint detection results
+        _region_to_joints = {
+            "head": ["head"], "upper_body": ["left_shoulder", "right_shoulder"],
+            "left_arm": ["left_elbow", "left_wrist"], "right_arm": ["right_elbow", "right_wrist"],
+            "torso": ["left_shoulder", "right_shoulder", "left_hip", "right_hip"],
+            "hips": ["left_hip", "right_hip"], "left_leg": ["left_knee"],
+            "right_leg": ["right_knee"], "left_foot": ["left_ankle"],
+            "right_foot": ["right_ankle"], "feet": ["left_ankle", "right_ankle"],
+            "body": ["left_hip", "right_hip"],
+        }
+        for ann in data.get("annotations", []):
+            frame_idx = max(0, ann.get("frame", 1) - 1)
+            joints = _frame_joints.get(frame_idx, _frame_joints.get(0, {}))
+            if not joints:
+                continue
+            region = ann.get("region", "body").lower()
+            joint_names = _region_to_joints.get(region, ["left_hip", "right_hip"])
+            pts = [(float(joints[j]["x"]), float(joints[j]["y"]))
+                   for j in joint_names if j in joints
+                   and float(joints[j].get("x", -1)) > 0 and float(joints[j].get("y", -1)) > 0]
+            if pts:
+                ann["x_pct"] = sum(p[0] for p in pts) / len(pts)
+                ann["y_pct"] = sum(p[1] for p in pts) / len(pts)
+        # Also patch skeleton with precise joints if available
+        if data.get("skeleton") and _frame_joints:
+            best_frame = data["skeleton"].get("frame", 1) - 1
+            precise = _frame_joints.get(best_frame, _frame_joints.get(0, {}))
+            if precise:
+                for jname, jval in precise.items():
+                    if float(jval.get("x", -1)) > 0:
+                        data["skeleton"].setdefault("joints", {})[jname] = jval
 
         anns     = data.get("annotations", [])
         skeleton = data.get("skeleton")          # single skeleton dict (best frame)
@@ -1355,6 +1479,49 @@ def analyze_media(
     except anthropic.APIError as e:
         return {"success": False, "error": f"API error: {e}",
                 "data": None, "annotated_image": None, "key_frames": [], "frames_analyzed": 0}
+
+
+def _assess_injury_risk(data: dict) -> list[dict]:
+    """Assess injury risk from skeleton angles and body position score. Returns list of risk flags."""
+    risks = []
+    scores = data.get("scores", {})
+    skeleton = data.get("skeleton", {})
+    angles = skeleton.get("key_angles", [])
+    body_score = scores.get("body_position", 7)
+
+    # Low body position score = higher risk
+    if body_score <= 4:
+        risks.append({
+            "area": "General Biomechanics",
+            "level": "high",
+            "note": "Poor body positioning patterns increase load on knee and ankle joints. Correct technique reduces injury risk significantly.",
+            "icon": "🦵"
+        })
+    elif body_score <= 6:
+        risks.append({
+            "area": "Joint Load",
+            "level": "medium",
+            "note": "Body position mechanics could place uneven load on stabilising muscles. Monitor after high-intensity sessions.",
+            "icon": "⚠️"
+        })
+
+    # Check angles for concerning values
+    for ang in angles:
+        deg = ang.get("degrees", 0)
+        assessment = ang.get("assessment", "good")
+        label_a = ang.get("label", "")
+        if assessment == "error":
+            if "knee" in label_a.lower() and (deg < 90 or deg > 170):
+                risks.append({"area": f"Knee — {label_a}", "level": "high",
+                               "note": f"Knee angle of {deg}° during this action is outside the safe range. Risk of ACL/meniscus stress.", "icon": "🦴"})
+            elif "hip" in label_a.lower():
+                risks.append({"area": f"Hip — {label_a}", "level": "medium",
+                               "note": f"Hip angle of {deg}° may indicate compensation patterns that load the lower back.", "icon": "🔴"})
+
+    if not risks:
+        risks.append({"area": "No flags raised", "level": "clear",
+                      "note": "No obvious biomechanical injury risk patterns detected in this footage. Keep monitoring technique under fatigue.", "icon": "✅"})
+    return risks[:3]
 
 
 # ── Coaching Audio Narration ───────────────────────────────────────────────────
