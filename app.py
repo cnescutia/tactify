@@ -1005,18 +1005,17 @@ tab_single, tab_compare, tab_team = st.tabs(["Single Session", "Before / After C
 
 with tab_single:
     # Demo mode button
-    _demo_col, _ = st.columns([1, 3])
+    _demo_col, _reset_col, _ = st.columns([1.4, 0.8, 2])
     with _demo_col:
-        _demo_mode = st.button("▶ Try Demo (no upload needed)", use_container_width=True)
+        _demo_mode = st.button("▶ Try Demo  — no upload needed", use_container_width=True)
+    with _reset_col:
+        if st.session_state.get("demo_active"):
+            if st.button("✕ Exit Demo", use_container_width=True):
+                st.session_state["demo_active"] = False
+                st.rerun()
     if _demo_mode:
         st.session_state["demo_active"] = True
-    if st.session_state.get("demo_active"):
-        st.markdown("""
-        <div style="background:#00FF8710;border:1.5px solid #00FF8740;border-radius:12px;padding:16px 24px;margin-bottom:20px;">
-            <div style="color:#00FF87;font-size:11px;letter-spacing:3px;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Demo Mode Active</div>
-            <div style="color:#888;font-size:13px;">Showing a pre-analysed session. Upload your own footage to run a live analysis.</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.rerun()
 
     col_up, col_ctx = st.columns([1.5, 1], gap="large")
 
@@ -1073,11 +1072,108 @@ with tab_single:
         age_group = st.selectbox("Age Group", AGE_GROUPS, index=3,  label_visibility="collapsed")
         notes     = st.text_area("Notes", height=80, label_visibility="collapsed",
                                   placeholder="e.g. right-footed striker, focus on off-ball movement…")
+        label("Coaching Tone")
+        _tone = st.select_slider(
+            "tone",
+            options=["🟢 Encouraging", "⚖️ Balanced", "🔴 Demanding"],
+            value="⚖️ Balanced",
+            label_visibility="collapsed",
+        )
+        st.session_state["coaching_tone"] = _tone
         gap(10)
         _has_input = bool(uploaded_file or webcam_capture)
         run = st.button("Run Analysis ▶", use_container_width=True, disabled=not _has_input)
 
     st.markdown('<hr>', unsafe_allow_html=True)
+
+    # ── Demo mode — render pre-built analysis ─────────────────────────────────
+    if st.session_state.get("demo_active") and not (_has_input and run):
+        _DEMO = {
+            "summary": "Technically gifted winger with excellent acceleration but consistently drops the shoulder too early on 1v1s, telegraphing the dribble direction to defenders. Body position on receiving is upright — limiting first-touch control and quick turn capability.",
+            "scores": {"technique": 7, "body_position": 5, "spatial_awareness": 8, "decision_making": 6, "effort": 9},
+            "annotations": [
+                {"number": 1, "label": "Shoulder drop — telegraphed", "note": "Left shoulder drops 0.4s before the cut, giving the defender a clear read on the direction.", "region": "upper_body", "severity": "error", "frame": 2, "x_pct": 0.42, "y_pct": 0.28},
+                {"number": 2, "label": "Upright first touch", "note": "Receiving posture is vertical — hips high, no knee bend — killing the ability to turn quickly.", "region": "hips", "severity": "warning", "frame": 1, "x_pct": 0.48, "y_pct": 0.52},
+                {"number": 3, "label": "Strong side scan missing", "note": "No head check in the 2.0s before receiving — blind to the overlapping full-back in space.", "region": "head", "severity": "warning", "frame": 1, "x_pct": 0.46, "y_pct": 0.12},
+                {"number": 4, "label": "Plant foot — good width", "note": "Consistent wide plant foot placement creates a solid base for crossing actions.", "region": "left_foot", "severity": "strength", "frame": 3, "x_pct": 0.38, "y_pct": 0.84},
+                {"number": 5, "label": "Explosive first step", "note": "First stride after the touch covers 1.8m — elite acceleration profile for this age group.", "region": "left_leg", "severity": "strength", "frame": 3, "x_pct": 0.40, "y_pct": 0.68},
+            ],
+            "priority_fix": {
+                "title": "Disguise the shoulder before cutting",
+                "what": "The left shoulder drops and rotates toward the intended cut direction 0.4 seconds before the foot plant — any professional defender reads this instantly.",
+                "why": "At senior level this costs you the 1v1 every time. Defenders are trained to watch the hips and shoulders, not the ball. An early shoulder drop is the equivalent of announcing your pass.",
+                "cue": "Shoulders flat, then explode",
+                "drill": {
+                    "name": "Mirror Wall Cuts",
+                    "duration": "12 min",
+                    "setup": "Stand 1m from a wall mirror. Cone at your feet. Practice 10 cuts per side, watching your own shoulder in the mirror. Shoulder must stay level until the plant foot hits.",
+                    "focus": "Keep both shoulders parallel to the ground until the last possible moment",
+                    "know_its_working": "You can no longer predict which way you'll go just by watching your own shoulders in the mirror"
+                }
+            },
+            "fix_cards": [
+                {"mistake": "Upright receiving posture", "why_it_matters": "High hips = slow turn. At professional pace you lose 0.3–0.5 seconds on every first touch, enough for a press to arrive.", "correction": "Bend knees to 120° as the ball travels to you. Weight on the balls of your feet, not heels. Hips below shoulder height on contact.", "cue": "Low hips, live feet",
+                 "drill": {"name": "Low Gate Receive", "duration": "10 min", "setup": "Set two cones 40cm high (use poles or a low hurdle). Receive the ball only if you can pass under the gate with your hips. Partner passes from 8m.", "know_its_working": "You feel your quads burning on every receive — that means your hips are low enough"}},
+                {"mistake": "No pre-receive scan", "why_it_matters": "Missing the overlapping run means you play into pressure instead of into space — your team loses a 2v1 advantage.", "correction": "Make two head checks in the final 3 seconds before the ball reaches you. Look over both shoulders, not just the strong side.", "cue": "Check twice, touch once",
+                 "drill": {"name": "Numbered Scanner", "duration": "8 min", "setup": "Coach holds up finger numbers (1–5) behind you. Scan, call the number, then receive. 20 reps each side.", "know_its_working": "You can call the number correctly 9 out of 10 times without breaking your run shape"}},
+            ],
+            "strengths": [
+                "Explosive first stride — covers 1.8m in the first step after contact, elite acceleration profile",
+                "Wide plant foot placement creates a consistent crossing base — rare technical consistency",
+                "High effort press recovery — averages 3.2 pressing actions per minute of footage"
+            ],
+            "best_moment": {"frame": 3, "description": "Perfect wide plant foot position on the cross — weight transferred correctly, non-kicking foot pointing at the target, contact made through the lower half of the ball."},
+            "worst_moment": {"frame": 2, "what": "Shoulder telegraphing the cut direction", "cause": "Early shoulder rotation before plant foot is set — a habit from youth training where defenders were slower", "effect": "Defender steps to the correct side 0.4s before the cut — the dribble is neutralised before it starts"},
+            "pro_reference": {"player": "Leroy Sané", "team": "Bayern Munich", "note": "Sané keeps his shoulders square until the absolute last moment on cuts, making him unreadable even at elite defensive pace. His ability to cut either way from the same body shape is the exact technical quality to study.", "youtube_query": "Leroy Sané dribbling technique shoulder body feint analysis"},
+            "key_frames": [],
+        }
+        _demo_position = "Winger (RW/LW)"
+        _demo_age = "U21 / Youth"
+        # ── Demo banner ────────────────────────────────────────────────────────
+        st.markdown("""
+        <div style="background:#FFC70015;border:1.5px solid #FFC70040;border-radius:12px;padding:14px 22px;margin-bottom:24px;display:flex;align-items:center;gap:12px;">
+            <span style="font-size:20px;">⚡</span>
+            <div>
+                <div style="color:#FFC700;font-size:10px;letter-spacing:3px;font-weight:700;text-transform:uppercase;">Demo Analysis</div>
+                <div style="color:#888;font-size:12px;">Pre-loaded winger session · Upload your own footage to run a live AI analysis</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        # ── Summary ────────────────────────────────────────────────────────────
+        st.markdown(f"""
+        <div style="border-left:3px solid #00FF87;padding:16px 24px;background:#00FF870a;border-radius:0 10px 10px 0;margin-bottom:24px;">
+            <div style="color:#00FF87;font-size:10px;letter-spacing:3px;text-transform:uppercase;font-weight:700;margin-bottom:6px;">AI Assessment</div>
+            <div style="color:#ddd;font-size:15px;line-height:1.6;font-style:italic;">"{e(_DEMO['summary'])}"</div>
+        </div>
+        """, unsafe_allow_html=True)
+        # ── Scores ─────────────────────────────────────────────────────────────
+        _dc1, _dc2 = st.columns([1, 1], gap="large")
+        with _dc1:
+            label("Performance Scores")
+            render_scores(_DEMO["scores"])
+        with _dc2:
+            label("Skill Radar")
+            render_radar_chart(_DEMO["scores"])
+        gap(24)
+        # ── Priority fix ────────────────────────────────────────────────────────
+        label("Priority Focus This Session")
+        render_priority_fix(_DEMO["priority_fix"])
+        gap(24)
+        # ── Fix cards ───────────────────────────────────────────────────────────
+        label("Fix Cards · Mistakes & Drills")
+        render_fix_cards(_DEMO["fix_cards"])
+        gap(24)
+        # ── Strengths ───────────────────────────────────────────────────────────
+        label("What You're Doing Well")
+        st.markdown('<div style="background:#111;border:1.5px solid #00FF8730;border-radius:14px;padding:22px;">', unsafe_allow_html=True)
+        for _s in _DEMO["strengths"]:
+            st.markdown(f'<div style="color:#bbb;font-size:13px;line-height:1.6;padding:9px 0;border-bottom:1px solid #1a1a1a;display:flex;gap:10px;"><span style="color:#00FF87;flex-shrink:0;margin-top:1px;">✓</span>{e(_s)}</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        gap(24)
+        # ── Pro reference ────────────────────────────────────────────────────────
+        label("Professional Reference")
+        render_pro_reference(_DEMO["pro_reference"])
+        st.stop()
 
     # ── Results (single session) ───────────────────────────────────────────────
 
@@ -1215,6 +1311,20 @@ with tab_single:
   document.getElementById('coach_audio').volume = 0.85;
 </script>
 """, height=60)
+
+        gap(8)
+        _copy_summary = data.get("summary", "")
+        _copy_txt = f"Tactify Analysis\n\nSummary: {_copy_summary}\n\nScores: " + " | ".join(f"{k.replace('_',' ').title()}: {v}/10" for k,v in data.get('scores',{}).items())
+        st_components.html(f"""
+        <button onclick="navigator.clipboard.writeText({repr(_copy_txt)}).then(()=>{{
+            this.textContent='✓ Copied!';
+            setTimeout(()=>{{this.textContent='📋 Copy Summary';}},2000);
+        }})" style="background:transparent;color:#555;border:1px solid #2a2a2a;border-radius:6px;
+            padding:6px 14px;font-size:11px;font-weight:600;letter-spacing:1px;
+            text-transform:uppercase;cursor:pointer;font-family:-apple-system,sans-serif;">
+            📋 Copy Summary
+        </button>
+        """, height=44)
 
         # ── Media + Scores ─────────────────────────────────────────────────────
         col_media, col_scores = st.columns([1.2, 1], gap="large")

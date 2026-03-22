@@ -635,13 +635,37 @@ def _build_overlay(w: int, h: int, annotations: list, scores: dict,
         lbl    = ann.get("label", "")[:28]
         rgb    = _SEV_RGB.get(sev, _SEV_RGB["warning"])
 
-        # Position: use Claude's observed coordinates when present
+        # Position priority: 1) Claude x_pct/y_pct  2) skeleton joints  3) fallback
+        _region_to_joints = {
+            "head": ["head"], "upper_body": ["left_shoulder", "right_shoulder"],
+            "left_arm": ["left_elbow", "left_wrist"], "right_arm": ["right_elbow", "right_wrist"],
+            "torso": ["left_shoulder", "right_shoulder", "left_hip", "right_hip"],
+            "hips": ["left_hip", "right_hip"], "left_leg": ["left_knee"],
+            "right_leg": ["right_knee"], "left_foot": ["left_ankle"],
+            "right_foot": ["right_ankle"], "feet": ["left_ankle", "right_ankle"],
+            "body": ["left_hip", "right_hip"],
+        }
         if ann.get("x_pct") is not None and ann.get("y_pct") is not None:
-            px = int(float(ann["x_pct"]) * w)
-            py = int(float(ann["y_pct"]) * h)
+            xv, yv = float(ann["x_pct"]), float(ann["y_pct"])
+            if 0.02 < xv < 0.98 and 0.02 < yv < 0.98:   # reject edge defaults
+                px, py = int(xv * w), int(yv * h)
+            else:
+                px, py = None, None
         else:
-            fx, fy = _REGION_FALLBACK.get(region, (0.5, 0.5))
-            px, py = int(fx * w), int(fy * h)
+            px, py = None, None
+        if px is None:
+            # Try skeleton joints for this region
+            skel = skeleton if skeleton else {}
+            joint_names = _region_to_joints.get(region, [])
+            jdata = skel.get("joints", {})
+            _pts = [(float(jdata[j]["x"]), float(jdata[j]["y"])) for j in joint_names
+                    if j in jdata and float(jdata[j].get("x",-1)) > 0 and float(jdata[j].get("y",-1)) > 0]
+            if _pts:
+                px = int(sum(p[0] for p in _pts) / len(_pts) * w)
+                py = int(sum(p[1] for p in _pts) / len(_pts) * h)
+            else:
+                fx, fy = _REGION_FALLBACK.get(region, (0.5, 0.5))
+                px, py = int(fx * w), int(fy * h)
         px = max(r + 4, min(w - r - 4, px))
         py = max(r + 4, min(h - r - 4, py))
 
@@ -808,13 +832,38 @@ def _build_overlay_tracked(
         rgb    = _SEV_RGB.get(sev, _SEV_RGB["warning"])
 
         # Reference position from key frame, shifted by player motion delta
+        # Position priority: 1) Claude x_pct/y_pct  2) skeleton joints  3) fallback
+        _region_to_joints = {
+            "head": ["head"], "upper_body": ["left_shoulder", "right_shoulder"],
+            "left_arm": ["left_elbow", "left_wrist"], "right_arm": ["right_elbow", "right_wrist"],
+            "torso": ["left_shoulder", "right_shoulder", "left_hip", "right_hip"],
+            "hips": ["left_hip", "right_hip"], "left_leg": ["left_knee"],
+            "right_leg": ["right_knee"], "left_foot": ["left_ankle"],
+            "right_foot": ["right_ankle"], "feet": ["left_ankle", "right_ankle"],
+            "body": ["left_hip", "right_hip"],
+        }
         if ann.get("x_pct") is not None and ann.get("y_pct") is not None:
-            base_px = int(float(ann["x_pct"]) * w)
-            base_py = int(float(ann["y_pct"]) * h)
+            xv, yv = float(ann["x_pct"]), float(ann["y_pct"])
+            if 0.02 < xv < 0.98 and 0.02 < yv < 0.98:   # reject edge defaults
+                base_px, base_py = int(xv * w), int(yv * h)
+            else:
+                base_px, base_py = None, None
         else:
-            fx, fy  = _REGION_FALLBACK.get(region, (0.5, 0.5))
-            base_px = int(fx * w)
-            base_py = int(fy * h)
+            base_px, base_py = None, None
+        if base_px is None:
+            # No skeleton available in tracked overlay — fall back to region defaults
+            skel = {}
+            joint_names = _region_to_joints.get(region, [])
+            jdata = skel.get("joints", {})
+            _pts = [(float(jdata[j]["x"]), float(jdata[j]["y"])) for j in joint_names
+                    if j in jdata and float(jdata[j].get("x",-1)) > 0 and float(jdata[j].get("y",-1)) > 0]
+            if _pts:
+                base_px = int(sum(p[0] for p in _pts) / len(_pts) * w)
+                base_py = int(sum(p[1] for p in _pts) / len(_pts) * h)
+            else:
+                fx, fy  = _REGION_FALLBACK.get(region, (0.5, 0.5))
+                base_px = int(fx * w)
+                base_py = int(fy * h)
 
         px = max(r + 4, min(w - r - 4, base_px + dx))
         py = max(r + 4, min(h - r - 4, base_py + dy))
