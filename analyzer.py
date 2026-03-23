@@ -851,12 +851,15 @@ def _build_score_overlay(w: int, h: int, scores: dict) -> "Image.Image":
 # ── Per-frame tracked annotation overlay ──────────────────────────────────────
 
 def _build_overlay_tracked(
-    w: int, h: int, anns: list, dx: int, dy: int, frame_idx: int
+    w: int, h: int, anns: list, dx: int, dy: int, frame_idx: int,
+    player_xy: tuple | None = None,
 ) -> "Image.Image":
     """
     Like _build_overlay but shifts all annotation positions by (dx, dy) —
     the estimated player motion delta from the key frame — and adds a
     pulsing glow animation driven by frame_idx.
+    player_xy: current (cx, cy) tracked player centre in full-frame pixels.
+    Used as fallback anchor when Claude didn't return precise x_pct/y_pct.
     """
     from PIL import Image, ImageDraw
 
@@ -896,15 +899,31 @@ def _build_overlay_tracked(
         else:
             base_px, base_py = None, None
         if base_px is None:
-            # No skeleton available in tracked overlay — fall back to region defaults
-            skel = {}
-            joint_names = _region_to_joints.get(region, [])
-            jdata = skel.get("joints", {})
-            _pts = [(float(jdata[j]["x"]), float(jdata[j]["y"])) for j in joint_names
-                    if j in jdata and float(jdata[j].get("x",-1)) > 0 and float(jdata[j].get("y",-1)) > 0]
-            if _pts:
-                base_px = int(sum(p[0] for p in _pts) / len(_pts) * w)
-                base_py = int(sum(p[1] for p in _pts) / len(_pts) * h)
+            # Fallback: place relative to tracked player centre using anatomy offsets
+            # Offsets are (x_frac, y_frac) relative to player centre:
+            #   x: negative = left of player, positive = right
+            #   y: negative = above player centre, positive = below
+            _ANATOMY_OFFSET = {
+                "head":        (0.00, -0.38),
+                "upper_body":  (0.00, -0.22),
+                "torso":       (0.00, -0.08),
+                "left_arm":    (-0.16, -0.14),
+                "right_arm":   ( 0.16, -0.14),
+                "hips":        (0.00,  0.05),
+                "left_leg":    (-0.08,  0.18),
+                "right_leg":   ( 0.08,  0.18),
+                "feet":        (0.00,  0.35),
+                "left_foot":   (-0.07,  0.36),
+                "right_foot":  ( 0.07,  0.36),
+                "body":        (0.00,  0.00),
+            }
+            if player_xy is not None:
+                pcx, pcy = player_xy
+                ox, oy = _ANATOMY_OFFSET.get(region, (0.0, 0.0))
+                # Compute base so that base + dx = player_current + anatomy_offset
+                # (i.e. dot sticks to the player's body at the right spot)
+                base_px = int(pcx + ox * w * 0.30) - dx
+                base_py = int(pcy + oy * h * 0.60) - dy
             else:
                 fx, fy  = _REGION_FALLBACK.get(region, (0.5, 0.5))
                 base_px = int(fx * w)
@@ -1642,73 +1661,109 @@ def create_annotated_video_simple(
                 img = img.crop((0, 0, w, h))
             pil_frames.append(img)
 
-        # ── Lightweight per-frame player position tracking ────────────────────
-        # Downsample to 128×72 for fast frame differencing
-        TRACK_W, TRACK_H = 128, 72
+        # ── ROI-based player tracking ─────────────────────────────────────────
+        # Step 1: derive the player's initial body centre from Claude annotations
+        # (use torso/hips/body tags first; fall back to mean of all valid positions)
+        _valid_anns = [
+            a for a in annotations
+            if a.get("x_pct") is not None and a.get("y_pct") is not None
+            and 0.05 < float(a["x_pct"]) < 0.95 and 0.05 < float(a["y_pct"]) < 0.95
+        ]
+        _body_anns = [
+            a for a in _valid_anns
+            if a.get("region", "body").lower() in ("body", "torso", "hips")
+        ] or _valid_anns
+        if _body_anns:
+            init_cx = int(sum(float(a["x_pct"]) for a in _body_anns) / len(_body_anns) * w)
+            init_cy = int(sum(float(a["y_pct"]) for a in _body_anns) / len(_body_anns) * h)
+        else:
+            init_cx, init_cy = w // 2, h // 2
+
+        # Step 2: downsample frames for fast processing
+        TRACK_W, TRACK_H = 160, 90
+        scale_x = TRACK_W / w
+        scale_y = TRACK_H / h
         track_imgs = [
             img.resize((TRACK_W, TRACK_H), Image.BILINEAR).convert("L")
             for img in pil_frames
         ]
 
-        def _motion_center(i):
-            """Weighted centroid of pixels that changed between frames i-1 and i."""
+        # ROI half-sizes in full-frame pixels — 38% width, 58% height
+        roi_hw = int(w * 0.38 / 2)
+        roi_hh = int(h * 0.58 / 2)
+
+        def _motion_in_roi(i: int, cx: int, cy: int):
+            """
+            Weighted centroid of changed pixels within a bounding box around
+            (cx, cy).  Only pixels inside the player's expected region contribute,
+            so crowd movement / camera shake outside that area is ignored.
+            Returns full-frame pixel coords or None if motion is too weak.
+            """
             if i == 0:
                 return None
-            diff_data  = list(ImageChops.difference(track_imgs[i], track_imgs[i - 1]).getdata())
-            threshold  = 20
+            # Map ROI bounds to tracking resolution
+            tx1 = max(0, int((cx - roi_hw) * scale_x))
+            ty1 = max(0, int((cy - roi_hh) * scale_y))
+            tx2 = min(TRACK_W, int((cx + roi_hw) * scale_x))
+            ty2 = min(TRACK_H, int((cy + roi_hh) * scale_y))
+            if tx2 <= tx1 or ty2 <= ty1:
+                return None
+            curr_roi = track_imgs[i].crop((tx1, ty1, tx2, ty2))
+            prev_roi = track_imgs[i - 1].crop((tx1, ty1, tx2, ty2))
+            diff_data = list(ImageChops.difference(curr_roi, prev_roi).getdata())
+            threshold = 18
             wx = wy = total = 0.0
+            rw = curr_roi.width
+            rh = curr_roi.height
             for idx, val in enumerate(diff_data):
                 if val > threshold:
-                    wx    += (idx % TRACK_W) * val
-                    wy    += (idx // TRACK_W) * val
+                    lx = idx % rw
+                    ly = idx // rw
+                    # Back to full-frame coords
+                    fx = (tx1 + lx) / scale_x
+                    fy = (ty1 + ly) / scale_y
+                    wx    += fx * val
+                    wy    += fy * val
                     total += val
-            if total < 300:
+            if total < 150:
                 return None
-            return (int(wx / total * w / TRACK_W), int(wy / total * h / TRACK_H))
+            return (int(wx / total), int(wy / total))
 
-        raw_positions = [_motion_center(i) for i in range(n_frames)]
-
-        # Forward-fill gaps
-        last = (w // 2, h // 2)
+        # Step 3: adaptive ROI tracking — ROI follows the player frame by frame
+        SMOOTH_ALPHA = 0.60          # responsiveness (higher = faster)
+        MAX_JUMP     = int(w * 0.12) # max plausible displacement per frame
+        curr_cx, curr_cy = init_cx, init_cy
+        smoothed = []                # reuse name for downstream compatibility
         for i in range(n_frames):
-            if raw_positions[i] is not None:
-                last = raw_positions[i]
-            else:
-                raw_positions[i] = last
+            pos = _motion_in_roi(i, curr_cx, curr_cy)
+            if pos is not None:
+                jump = math.sqrt((pos[0] - curr_cx) ** 2 + (pos[1] - curr_cy) ** 2)
+                if jump < MAX_JUMP:
+                    curr_cx = int(SMOOTH_ALPHA * pos[0] + (1 - SMOOTH_ALPHA) * curr_cx)
+                    curr_cy = int(SMOOTH_ALPHA * pos[1] + (1 - SMOOTH_ALPHA) * curr_cy)
+            smoothed.append((curr_cx, curr_cy))
 
-        # Backward-fill leading Nones
-        first = next((p for p in raw_positions if p is not None), (w // 2, h // 2))
-        for i in range(n_frames):
-            if raw_positions[i] == (w // 2, h // 2):
-                raw_positions[i] = first
-            else:
-                break
-
-        # Smooth with rolling average (~0.25 s window) to remove jitter
-        win = max(3, int(fps / 4))
-        smoothed = []
-        for i in range(n_frames):
-            s = max(0, i - win // 2)
-            e = min(n_frames, i + win // 2 + 1)
-            xs = [raw_positions[j][0] for j in range(s, e)]
-            ys = [raw_positions[j][1] for j in range(s, e)]
-            smoothed.append((int(sum(xs) / len(xs)), int(sum(ys) / len(ys))))
-
-        # ── Annotation groups and key-frame anchor positions ──────────────────
+        # ── Annotation groups ─────────────────────────────────────────────────
         frame_nums = sorted({ann.get("frame", 1) for ann in annotations})
         num_groups = max(frame_nums) if frame_nums else 1
         skel_fn    = int(skeleton.get("frame", 1)) if skeleton else None
 
-        # Video frame index for each annotation key frame
-        kf_vidx = {}
+        # Per-group anchor = mean of Claude's annotation positions for that group
+        # (NOT the motion centroid — Claude already told us where the body parts are)
+        group_ref_pos = {}
         for fn in range(1, num_groups + 1):
-            if duration > 0:
-                kf_vidx[fn] = min(int(duration * fn / (num_groups + 1) * fps), n_frames - 1)
+            grp = [a for a in annotations if a.get("frame", 1) == fn]
+            grp_valid = [
+                a for a in grp
+                if a.get("x_pct") is not None and a.get("y_pct") is not None
+                and 0.05 < float(a["x_pct"]) < 0.95 and 0.05 < float(a["y_pct"]) < 0.95
+            ]
+            if grp_valid:
+                rx = int(sum(float(a["x_pct"]) for a in grp_valid) / len(grp_valid) * w)
+                ry = int(sum(float(a["y_pct"]) for a in grp_valid) / len(grp_valid) * h)
             else:
-                kf_vidx[fn] = min(n_frames * fn // (num_groups + 1), n_frames - 1)
-
-        # Player center (smoothed) at each key frame — annotation anchor
-        kf_player = {fn: smoothed[vi] for fn, vi in kf_vidx.items()}
+                rx, ry = init_cx, init_cy
+            group_ref_pos[fn] = (rx, ry)
 
         # Time boundaries for switching annotation groups
         if num_groups > 1 and duration > 0:
@@ -1760,10 +1815,14 @@ def create_annotated_video_simple(
         for i, img in enumerate(pil_frames):
             fn          = _group_for_frame(i)
             anns        = group_anns.get(fn, group_anns.get(1, []))
+            # dx/dy = how far the player has moved since Claude's key-frame snapshot
             curr_player = smoothed[i]
-            ref_player  = kf_player.get(fn, (w // 2, h // 2))
+            ref_player  = group_ref_pos.get(fn, (init_cx, init_cy))
             dx          = curr_player[0] - ref_player[0]
             dy          = curr_player[1] - ref_player[1]
+            # Clamp shift so annotations never fly off-screen
+            dx = max(-int(w * 0.35), min(int(w * 0.35), dx))
+            dy = max(-int(h * 0.35), min(int(h * 0.35), dy))
 
             img_rgba = img.convert("RGBA")
 
@@ -1772,7 +1831,8 @@ def create_annotated_video_simple(
                 img_rgba = Image.alpha_composite(img_rgba, skeleton_overlay)
 
             # Tracked annotation overlay (dots/arrows follow player motion)
-            ann_overlay = _build_overlay_tracked(w, h, anns, dx, dy, i)
+            ann_overlay = _build_overlay_tracked(w, h, anns, dx, dy, i,
+                                                 player_xy=smoothed[i])
             img_rgba    = Image.alpha_composite(img_rgba, ann_overlay)
 
             # Score panel (always bottom-right, static)
