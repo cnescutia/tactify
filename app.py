@@ -38,6 +38,27 @@ try:
 
     load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
 
+    # ── Monetization layer (graceful import — app works without paywall) ──────
+    try:
+        from db_client import get_or_create_user, increment_analyses, check_can_analyze
+        from auth import render_auth_gate, render_paywall, check_session_upgrade
+        _MONETIZATION_ENABLED = True
+    except Exception:
+        _MONETIZATION_ENABLED = False
+        def get_or_create_user(email):
+            return {"email": email, "analyses_used": 0, "is_pro": False,
+                    "stripe_customer_id": None}
+        def increment_analyses(email):
+            return -1
+        def check_can_analyze(email):
+            return (True, "")
+        def render_auth_gate():
+            return None
+        def render_paywall(email, analyses_used):
+            return False
+        def check_session_upgrade(email):
+            return False
+
 except Exception as _import_error:
     st.error(f"**Startup import failed** (Python {sys.version}):\n\n```\n{_import_error}\n```")
     st.stop()
@@ -985,6 +1006,52 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ── Auth gate (sidebar) ───────────────────────────────────────────────────────
+_user_email = render_auth_gate()
+
+# ── Load user record from Supabase (if email provided) ───────────────────────
+_user_record = {"email": _user_email or "", "analyses_used": 0, "is_pro": False, "stripe_customer_id": None}
+if _user_email:
+    try:
+        _user_record = get_or_create_user(_user_email)
+    except Exception:
+        pass
+
+    # Check for Stripe payment redirect on page load
+    check_session_upgrade(_user_email)
+
+# ── Sidebar: plan status badge ────────────────────────────────────────────────
+if _user_email:
+    _is_pro = _user_record.get("is_pro", False)
+    _analyses_used = _user_record.get("analyses_used", 0)
+    with st.sidebar:
+        if _is_pro:
+            st.markdown(
+                """
+                <div style="background:#00FF8715;border:1px solid #00FF8740;
+                            border-radius:8px;padding:8px 14px;text-align:center;
+                            margin-bottom:8px;">
+                    <span style="color:#00FF87;font-size:12px;font-weight:800;
+                                 letter-spacing:1px;">Pro</span>
+                    <span style="color:#555;font-size:11px;margin-left:4px;">Unlimited analyses</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            _free_label = f"Free  {_analyses_used}/1 analyses used"
+            st.markdown(
+                f"""
+                <div style="background:#1a1a1a;border:1px solid #2a2a2a;
+                            border-radius:8px;padding:8px 14px;text-align:center;
+                            margin-bottom:8px;">
+                    <span style="color:#666;font-size:11px;font-weight:700;
+                                 letter-spacing:0.5px;">{_free_label}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
 # ── Session history (persists across reruns) ──────────────────────────────────
 if "history" not in st.session_state:
     st.session_state.history = []
@@ -996,6 +1063,27 @@ if "demo_active" not in st.session_state:
     st.session_state.demo_active = False
 
 # ── Mode Tabs ─────────────────────────────────────────────────────────────────
+
+# ── No-email prompt ───────────────────────────────────────────────────────────
+if not _user_email:
+    st.markdown("""
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
+                min-height:40vh;padding:60px 20px;text-align:center;">
+        <div style="font-size:52px;margin-bottom:20px;">⚽</div>
+        <div style="color:#fff;font-size:28px;font-weight:900;letter-spacing:-0.5px;margin-bottom:12px;">
+            Welcome to Tactify
+        </div>
+        <div style="color:#444;font-size:15px;line-height:1.7;max-width:420px;margin-bottom:32px;">
+            Enter your email in the sidebar to get started with AI-powered soccer coaching.
+        </div>
+        <div style="background:#00FF8715;border:1.5px solid #00FF8740;border-radius:12px;
+                    padding:16px 28px;color:#00FF87;font-size:13px;font-weight:700;
+                    letter-spacing:1px;">
+            Open the sidebar  →  Enter your email  →  Run your first analysis free
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
 
 tab_single, tab_compare, tab_team = st.tabs(["Single Session", "Before / After Comparison", "Team Dashboard"])
 
@@ -1192,6 +1280,18 @@ with tab_single:
     # ── Results (single session) ───────────────────────────────────────────────
 
     if _has_input and run:
+        # ── Auth gate check ────────────────────────────────────────────────────
+        if not _user_email:
+            st.warning("Please enter your email in the sidebar to run an analysis.")
+            st.stop()
+
+        # ── Paywall check ──────────────────────────────────────────────────────
+        _can_analyze, _paywall_reason = check_can_analyze(_user_email)
+        if not _can_analyze:
+            _fresh_record = get_or_create_user(_user_email)
+            render_paywall(_user_email, _fresh_record.get("analyses_used", 0))
+            st.stop()
+
         # Read file bytes now (deferred from preview to avoid memory issues on upload)
         if uploaded_file and file_bytes is None:
             file_bytes = uploaded_file.read()
@@ -1298,6 +1398,13 @@ with tab_single:
 
         _prog.progress(100, text="🏆  Analysis complete — let's get to work!")
         _prog.empty()
+
+        # ── Record analysis usage ──────────────────────────────────────────────
+        if _user_email:
+            try:
+                increment_analyses(_user_email)
+            except Exception:
+                pass
 
         # ── Summary banner ─────────────────────────────────────────────────────
         sum_col, aud_col = st.columns([1.6, 1], gap="large")
